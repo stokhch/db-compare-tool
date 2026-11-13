@@ -8,13 +8,14 @@ const { getConnection, publicConnection } = require('../lib/store');
 const { plpgsqlCheck } = require('./pgcheck');
 const { filterMeta } = require('../meta/objects');
 const { buildSchemaSync } = require('./syncschema');
+const { checkTranslation } = require('./translation');
 
 const CAT = {
   tables: 'Таблицы', columns: 'Колонки', pk: 'Первичные ключи', uniques: 'Уникальные ключи',
   fks: 'Внешние ключи', checks: 'CHECK-ограничения', indexes: 'Индексы', triggers: 'Триггеры',
   views: 'Представления', mviews: 'Материализованные представления', sequences: 'Последовательности',
   routines: 'Функции и процедуры', types: 'Типы', rows: 'Количество строк', invalid: 'Невалидные объекты',
-  pgcheck: 'Код PostgreSQL (plpgsql_check)', viewcols: 'Колонки представлений',
+  pgcheck: 'Код PostgreSQL (plpgsql_check)', translation: 'Перевод кода Oracle → PostgreSQL', viewcols: 'Колонки представлений',
 };
 
 function makeKey(caseSensitive) { return n => (n == null ? '' : caseSensitive ? String(n) : String(n).toLowerCase()); }
@@ -64,6 +65,15 @@ async function runSchemaCompare(p, ctx) {
         } catch (e) { meta.pgcheck = { available: false, note: `plpgsql_check: ${e.message}`, messages: [] }; }
       }
     }
+    // Проверка перевода кода Oracle → PostgreSQL
+    let translation = null;
+    if (p.checkTranslation !== false && src.type === 'oracle' && tgt.type === 'postgres' && p.compareRoutines !== false) {
+      ctx.checkCancel();
+      ctx.progress(0, 0, 'Проверка перевода кода…');
+      try { translation = await checkTranslation(src, tgt, A, B, p, ctx); }
+      catch (e) { translation = { error: e.message, findings: [] }; ctx.log(`Проверка перевода не выполнена: ${e.message}`, 'warning'); }
+    }
+    A.translation = translation;
     // Скрипт синхронизации структуры (приёмник → как источник)
     if (p.buildSync !== false) {
       ctx.progress(0, 0, 'Скрипт синхронизации…');
@@ -243,6 +253,12 @@ async function runSchemaCompare(p, ctx) {
       add(CAT.pgcheck, m.function, m.level, 'different', side === 'source' ? where || 'ошибка' : '', side === 'target' ? where || 'ошибка' : '', m.message);
     }
     if (!pc.messages.length) add(CAT.pgcheck, `${side === 'source' ? 'источник' : 'приёмник'}: проверено ${pc.checked}`, 'ok', 'equal', '', '', 'Ошибок не найдено');
+  }
+  if (A.translation) {
+    const t = A.translation;
+    if (t.error) add(CAT.translation, 'проверка', 'warning', 'different', '', '', t.error);
+    for (const f of t.findings) add(CAT.translation, f.object, f.level, 'different', f.oracle || '(нет оригинала)', f.line ? `строка ${f.line}${f.count > 1 ? ` (×${f.count})` : ''}: ${f.fragment}` : '', f.message);
+    if (!t.error && !t.findings.length) add(CAT.translation, `проверено функций: ${t.checked}`, 'ok', 'equal', '', '', 'Подозрительных мест не найдено');
   }
   for (const o of A.invalid) add(CAT.invalid, `${o.type} ${o.name}`, 'warning', 'different', 'INVALID', '', 'Невалидный объект в источнике');
   for (const o of B.invalid) add(CAT.invalid, `${o.type} ${o.name}`, 'warning', 'different', '', 'INVALID', 'Невалидный объект в приёмнике');

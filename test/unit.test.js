@@ -276,3 +276,63 @@ console.log('OK: окружение Oracle и профиль данных');
   assert.strictEqual(judge({ err: '-1403' }, { value: '1' }).status, 'fail');
   console.log('OK: юнит-тесты функций');
 }
+
+// --- проверка перевода кода Oracle → PostgreSQL ---
+{
+  const { analyzeTranslation, cleanCode, splitPackageBody, dmlTargets } = require('../server/compare/translation');
+  const oraBody = cleanCode(`
+PACKAGE BODY maket_pt IS
+  PROCEDURE helper(p NUMBER);  -- объявление вперёд
+  PROCEDURE ras_pt(p_d1 DATE, p_d2 DATE) IS
+    v NUMBER;
+  BEGIN
+    IF p_d1 IS NULL THEN RAISE_APPLICATION_ERROR(-20001, 'нет даты'); END IF;
+    SELECT cnt INTO v FROM sv_day WHERE sv_date = p_d1;
+    IF v > 0 THEN INSERT INTO t_rab (a) VALUES (v); END IF;
+    UPDATE t_arch SET x = 1 WHERE d_beg = p_d1;
+    IF v > 10 THEN NULL; END IF;
+    FOR r IN (SELECT 1 FROM dual) LOOP NULL; END LOOP;
+  EXCEPTION WHEN NO_DATA_FOUND THEN NULL;
+  END;
+  FUNCTION get_name(p_id NUMBER) RETURN VARCHAR2 IS
+  BEGIN RETURN 'x'; END;
+END;`);
+  const parts = splitPackageBody(oraBody, ['RAS_PT', 'GET_NAME']);
+  assert(parts.get('RAS_PT').includes('t_arch') && !parts.get('RAS_PT').includes('RETURN \'s\''));
+  assert.deepStrictEqual([...dmlTargets(parts.get('RAS_PT'))].sort(), ['t_arch', 't_rab']);
+  assert.deepStrictEqual([...dmlTargets('SELECT * FROM t FOR UPDATE; INSERT INTO s.x VALUES (1) ON CONFLICT DO UPDATE SET a = 1')], ['x']);
+  const pgSrc = cleanCode(`
+DECLARE v numeric; s varchar2(10);
+BEGIN
+  SELECT cnt INTO v FROM sv_day WHERE sv_date = p_d1;
+  IF NVL(v, 0) > 0 AND s = '' THEN INSERT INTO app.t_rab (a) VALUES (v); END IF;
+  v := TRUNC(p_d1, 'MM') ;
+  PERFORM decode('aGk=', 'base64');
+  COMMIT;
+EXCEPTION WHEN NO_DATA_FOUND THEN NULL;
+END`);
+  const pg = new Map([
+    ['app.maket_pt_ras_pt', [{ kind: 'f', lang: 'plpgsql', returns: 'void', code: pgSrc, args: [{ name: 'p_d1', type: 'timestamp without time zone', mode: 'i' }, { name: 'p_date2', type: 'text', mode: 'i' }] }]],
+    ['app.maket_pt_get_name', [{ kind: 'f', lang: 'plpgsql', returns: 'integer', code: "BEGIN RETURN 's'; END", args: [{ name: 'p_id', type: 'numeric', mode: 'i' }] }]],
+    ['app.lonely', [{ kind: 'f', lang: 'plpgsql', returns: 'void', code: cleanCode('BEGIN PERFORM 1 FROM dual WHERE ROWNUM = 1; END'), args: [] }]],
+  ]);
+  const oracle = [
+    { package: 'MAKET_PT', name: 'RAS_PT', overloads: [{ args: [{ name: 'P_D1', type: 'DATE', mode: 'IN' }, { name: 'P_D2', type: 'DATE', mode: 'IN' }], returns: null }], code: parts.get('RAS_PT') },
+    { package: 'MAKET_PT', name: 'GET_NAME', overloads: [{ args: [{ name: 'P_ID', type: 'NUMBER', mode: 'IN' }], returns: 'VARCHAR2' }], code: parts.get('GET_NAME') },
+    { package: 'MAKET_PT', name: 'NOT_PORTED', overloads: [{ args: [], returns: null }], code: '' },
+  ];
+  const f = analyzeTranslation({ targetSchema: 'APP', oracle, pg, pgFuncs: new Set(['trunc', 'decode']), pgRels: new Set(), pgTypes: new Set() });
+  const rules = o => f.filter(x => x.object === o).map(x => x.rule).sort();
+  const ras = rules('app.maket_pt_ras_pt');
+  for (const r of ['sig-types', 'sig-names', 'nvl', 'oratypes', 'emptystr', 'trunc', 'strict', 'commitfn', 'dml-lost', 'raise-lost', 'flow']) assert(ras.includes(r), `ras_pt: нет правила ${r}: ${ras}`);
+  assert(!ras.includes('decode'), 'decode(text, text) — встроенная функция PostgreSQL');
+  assert(f.find(x => x.rule === 'dml-lost').message.includes('t_arch'));
+  assert(f.find(x => x.rule === 'strict').line === 4, 'номер строки');
+  assert.deepStrictEqual(rules('app.maket_pt_get_name'), ['sig-ret']);
+  assert.deepStrictEqual(rules('app.lonely'), ['dual', 'rownum']);
+  assert(!f.some(x => x.oracle === 'MAKET_PT.NOT_PORTED'));
+  // orafce: NVL и dual есть в базе — не ошибка
+  const f2 = analyzeTranslation({ targetSchema: 'app', oracle: [], pg, pgFuncs: new Set(['nvl']), pgRels: new Set(['dual']), pgTypes: new Set(['varchar2']) });
+  assert(!f2.some(x => ['nvl', 'dual', 'oratypes'].includes(x.rule)));
+  console.log('OK: проверка перевода кода');
+}

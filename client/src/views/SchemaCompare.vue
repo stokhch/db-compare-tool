@@ -28,6 +28,7 @@
         <DxCheckBox v-model:value="opts.checkColumnOrder" text="Учитывать порядок колонок" />
         <DxCheckBox v-model:value="opts.caseSensitive" text="Имена с учётом регистра" />
         <DxCheckBox v-model:value="opts.checkPgCode" text="Проверить код PostgreSQL (plpgsql_check)" />
+        <DxCheckBox v-model:value="opts.checkTranslation" text="Проверить перевод кода Oracle → PG" hint="Сигнатуры, остатки Oracle-конструкций, '' и NULL, STRICT, таблицы, в которые пишет код" />
       </div>
       <div class="toolbar">
         <DxButton text="Сравнить" icon="runner" type="default" :disabled="!ready || (scope === 'selected' && !objects.length)" @click="run" />
@@ -113,7 +114,7 @@ const route = useRoute(); const router = useRouter();
 const lp = lastPick();
 const src = ref(lp.src || { connId: null, schema: '' });
 const tgt = ref(lp.tgt || { connId: null, schema: '' });
-const opts = reactive({ rowCounts: 'estimate', compareIndexes: true, compareRoutines: true, checkColumnOrder: false, caseSensitive: false, checkPgCode: true });
+const opts = reactive({ rowCounts: 'estimate', compareIndexes: true, compareRoutines: true, checkColumnOrder: false, caseSensitive: false, checkPgCode: true, checkTranslation: true });
 const jobId = ref(null);
 const result = ref(null);
 const category = ref(null);
