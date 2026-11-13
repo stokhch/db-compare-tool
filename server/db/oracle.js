@@ -99,6 +99,24 @@ class OracleDb {
     }
   }
 
+  // Результат произвольного запроса: имена колонок + строки (массивы), не больше maxRows
+  async fetchAll(sql, maxRows = 100000, binds = []) {
+    const r = await this.raw.execute(sql, binds, { resultSet: true, outFormat: oracledb.OUT_FORMAT_ARRAY, fetchArraySize: 1000 });
+    if (!r.resultSet) return { columns: [], rows: [], truncated: false, rowsAffected: r.rowsAffected };
+    const columns = r.resultSet.metaData.map(m => m.name);
+    const rows = [];
+    let truncated = false;
+    try {
+      while (true) {
+        const part = await r.resultSet.getRows(1000);
+        if (!part.length) break;
+        for (const x of part) { if (rows.length >= maxRows) { truncated = true; break; } rows.push(x); }
+        if (truncated || part.length < 1000) break;
+      }
+    } finally { await r.resultSet.close().catch(() => {}); }
+    return { columns, rows, truncated };
+  }
+
   async version() {
     const r = await this.query("SELECT banner FROM v$version WHERE ROWNUM = 1").catch(() => null);
     return r && r[0] ? r[0].banner : `Oracle ${this.raw.oracleServerVersionString}`;

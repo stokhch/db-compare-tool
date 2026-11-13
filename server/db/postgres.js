@@ -73,6 +73,22 @@ class PostgresDb {
     }
   }
 
+  async fetchAll(sql, maxRows = 100000, params = []) {
+    const cursor = this.raw.query(new Cursor(sql, params, { rowMode: 'array' }));
+    const rows = [];
+    let truncated = false;
+    try {
+      while (true) {
+        const part = await cursor.read(1000);
+        if (!part.length) break;
+        for (const x of part) { if (rows.length >= maxRows) { truncated = true; break; } rows.push(x); }
+        if (truncated) break;
+      }
+      const fields = (cursor._result && cursor._result.fields) || [];
+      return { columns: fields.map(f => f.name), rows, truncated };
+    } finally { await cursor.close().catch(() => {}); }
+  }
+
   async version() { return (await this.query('SELECT version() AS v'))[0].v; }
 
   async schemas() {

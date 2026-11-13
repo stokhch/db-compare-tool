@@ -140,3 +140,54 @@ const { filterMeta } = require('../server/meta/objects');
   assert.deepStrictEqual(filterMeta(pgMeta, [{ type: 'package', name: 'PKG' }], lc).routines.map(r => r.key), ['pkg_calc']);
 }
 console.log('OK: литералы синхронизации и фильтр объектов');
+
+// --- окружение Oracle: расписания и вызовы ---
+const { repeatToCron, plsqlToCall } = require('../server/migrate/extras');
+assert.strictEqual(repeatToCron('FREQ=DAILY;BYHOUR=2;BYMINUTE=30'), '30 2 * * *');
+assert.strictEqual(repeatToCron('FREQ=MINUTELY;INTERVAL=15'), '*/15 * * * *');
+assert.strictEqual(repeatToCron('FREQ=HOURLY;BYMINUTE=5'), '5 * * * *');
+assert.strictEqual(repeatToCron('FREQ=WEEKLY;BYDAY=MON,FRI;BYHOUR=7'), '0 7 * * 1,5');
+assert.strictEqual(repeatToCron('FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=3'), '0 3 1 * *');
+assert.strictEqual(repeatToCron('FREQ=MONTHLY;BYMONTHDAY=-1'), null);
+assert.strictEqual(plsqlToCall('BEGIN maket_pt.calc(1, sysdate); END;', 'HR'), 'CALL maket_pt_calc(1, sysdate)');
+assert.strictEqual(plsqlToCall('HR.PKG.RUN', 'HR'), 'CALL pkg_run()');
+assert.strictEqual(plsqlToCall('begin hr.p_load; end;', 'HR'), 'CALL p_load()');
+assert.strictEqual(plsqlToCall('BEGIN PKG.RUN; END;', 'HR', 'schema'), 'CALL pkg.run()');
+// --- профиль: рекомендации по данным Oracle ---
+const { recommendFromOracle } = require('../server/migrate/profile');
+{
+  const c = { dataType: 'NUMBER', type: 'NUMBER', precision: null, scale: null, family: 'numeric' };
+  assert.strictEqual(recommendFromOracle(c, { nn: 10, fr: 0, mn: '1', mx: '5000000000' }).recommended, 'bigint');
+  assert.strictEqual(recommendFromOracle(c, { nn: 10, fr: 3, sc: 2, mn: '1', mx: '5' }).recommended, 'numeric');
+  const i10 = { dataType: 'NUMBER', type: 'NUMBER(10)', precision: 10, scale: 0, family: 'int' };
+  assert.strictEqual(recommendFromOracle(i10, { nn: 10, fr: 2, mn: '1', mx: '5' }).level, 'error');
+  const d = { dataType: 'DATE', type: 'DATE', family: 'datetime' };
+  assert.strictEqual(recommendFromOracle(d, { nn: 10, tm: 0 }).recommended, 'date');
+  assert.strictEqual(recommendFromOracle(d, { nn: 10, tm: 4 }).recommended, 'timestamp(0)');
+  const v = { dataType: 'VARCHAR2', type: 'VARCHAR2(10 BYTE)', length: 10, family: 'string' };
+  assert.strictEqual(recommendFromOracle(v, { nn: 10, z: 2, ml: 5, mb: 5 }).level, 'error');
+}
+console.log('OK: окружение Oracle и профиль данных');
+
+// --- сканер кода ---
+{
+  const { scanFile } = require('../server/migrate/codescan');
+  const fs2 = require('fs'), os = require('os'), path2 = require('path');
+  const f = path2.join(os.tmpdir(), 'dbc_scan_test.js');
+  fs2.writeFileSync(f, [
+    "const oracledb = require('oracledb');",
+    "// NVL( в комментарии",
+    "const a = await c.execute(`SELECT NVL(x, 0) FROM t WHERE id = :id AND d > SYSDATE`, { id });",
+    "const b = 'не SQL: NVL(';",
+    "await c.execute('BEGIN pkg.run(:a); END;', [1]);",
+    "console.log(r.rows[0].NAME, r.rowsAffected);",
+  ].join('\n'));
+  const res = scanFile(f, 'x.js', { packages: new Set(['PKG']) });
+  const ids = res.map(x => x.rule);
+  for (const id of ['require-oracledb', 'nvl', 'binds', 'sysdate', 'plsql-block', 'package-call', 'rows-affected', 'execute']) assert(ids.includes(id), 'нет правила ' + id);
+  assert(!res.some(x => x.line === 2), 'комментарий не должен проверяться');
+  assert(!res.some(x => x.line === 4 && x.rule === 'nvl'), 'строка без SQL не должна проверяться');
+  assert.strictEqual(res.find(x => x.rule === 'package-call').fixed.includes('pkg_run('), true);
+  assert(res.find(x => x.rule === 'binds' && x.line === 3).hint.includes(':id → $1'));
+  console.log('OK: сканер кода');
+}

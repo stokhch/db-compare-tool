@@ -66,7 +66,11 @@ function compareDecimal(a, b) {
 
 const DT_RE = /^(-?\d{4,})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d+))?)?)?\s*(Z|[+-]\d{2}(?::?\d{2})?(?::?\d{2})?)?(\s*BC)?$/;
 function canonDateTime(v) {
-  if (v instanceof Date) v = v.toISOString().replace('T', ' ').replace('Z', '');
+  if (v instanceof Date) {
+    // node-oracledb отдаёт DATE/TIMESTAMP как Date в часовом поясе Node — берём «настенное» время
+    const p = (n, l = 2) => String(n).padStart(l, '0');
+    v = `${p(v.getFullYear(), 4)}-${p(v.getMonth() + 1)}-${p(v.getDate())} ${p(v.getHours())}:${p(v.getMinutes())}:${p(v.getSeconds())}.${p(v.getMilliseconds(), 3)}`;
+  }
   const s = String(v).trim();
   const m = DT_RE.exec(s);
   if (!m) return s;

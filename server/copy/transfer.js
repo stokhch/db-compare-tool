@@ -29,12 +29,12 @@ function topoOrder(tables, K) {
 }
 
 // ---------- DDL ----------
-function createTableSql(srcTable, srcType, tgt, tgtSchema) {
+function createTableSql(srcTable, srcType, tgt, tgtSchema, withPk = true) {
   const cols = srcTable.columns.map(c => {
     const type = targetColumnType(c, srcType, tgt.type);
     return `  ${tgt.quote(tgt.normName(c.name))} ${type}${c.nullable ? '' : ' NOT NULL'}`;
   });
-  if (srcTable.pk) {
+  if (srcTable.pk && withPk) {
     cols.push(`  CONSTRAINT ${tgt.quote(tgt.normName(srcTable.pk.name))} PRIMARY KEY (${srcTable.pk.columns.map(c => tgt.quote(tgt.normName(c))).join(', ')})`);
   }
   return `CREATE TABLE ${tgt.qualify(tgtSchema, tgt.normName(srcTable.name))} (\n${cols.join(',\n')}\n)`;
@@ -207,7 +207,7 @@ async function runTransfer(p, ctx) {
         throw new Error(`В приёмнике нет таблиц: ${missing.map(t => t.name).join(', ')}. Включите «Создавать отсутствующие таблицы».`);
       }
       for (const t of missing) {
-        const ddl = createTableSql(t, src.type, tgt, p.targetSchema);
+        const ddl = createTableSql(t, src.type, tgt, p.targetSchema, p.createPk !== false);
         ctx.log(ddl);
         await tgt.exec(ddl);
         if (tgt.type === 'postgres') { /* autocommit */ }
@@ -233,9 +233,14 @@ async function runTransfer(p, ctx) {
       }
     }
 
+    // Продолжение после сбоя: таблицы, уже загруженные в прошлом запуске, пропускаются
+    const skip = new Set((p.skipTables || []).map(K));
+    if (skip.size) ctx.log(`Продолжение: пропускаются уже загруженные таблицы (${skip.size})`);
+    const todo = selected.filter(t => !skip.has(K(t.name)));
+
     // 3. Очистка
     if (p.mode === 'truncate' || p.mode === 'delete') {
-      for (const t of [...selected].reverse()) {
+      for (const t of [...todo].reverse()) {
         const tb = mapB.get(K(t.name));
         const q = tgt.qualify(p.targetSchema, tb.name);
         if (p.mode === 'truncate') {
@@ -248,27 +253,44 @@ async function runTransfer(p, ctx) {
       }
     }
 
-    // 4. Копирование
+    // 4. Копирование: последовательно (порядок FK) или параллельно в несколько потоков
+    const parallel = Math.max(1, Math.min(Number(p.parallel) || 1, 16));
     let i = 0;
-    for (const ta of selected) {
-      ctx.checkCancel();
+    let stop = false;
+    const queue = [...todo];
+    const copyOne = async (s, t, ta) => {
       const tb = mapB.get(K(ta.name));
-      ctx.progress(i, selected.length, `${ta.name}…`);
       const t0 = Date.now();
       try {
-        const r = await copyTable(src, tgt, ta, tb, p, ctx, K, fetchSize);
+        const r = await copyTable(s, t, ta, tb, p, ctx, K, fetchSize);
         results.push({ table: ta.name, status: 'done', rows: r.rows, ms: Date.now() - t0, skippedColumns: r.skippedColumns });
         ctx.log(`${ta.name}: скопировано ${r.rows} строк за ${((Date.now() - t0) / 1000).toFixed(1)} с`);
       } catch (e) {
         if (e.cancelled) throw e;
-        if (tgt.type === 'oracle') await tgt.rollback();
+        if (t.type === 'oracle') await t.rollback();
         results.push({ table: ta.name, status: 'error', error: e.message, ms: Date.now() - t0 });
         ctx.log(`${ta.name}: ошибка — ${e.message}`, 'error');
-        if (p.stopOnError) break;
+        if (p.stopOnError) stop = true;
       }
-      ctx.progress(++i, selected.length);
+      ctx.progress(++i, todo.length, `Готово таблиц: ${i} из ${todo.length}`);
       ctx.setPartialResult({ summary: sum(results), tables: results });
+    };
+    if (parallel === 1) {
+      for (const ta of queue) { ctx.checkCancel(); if (stop) break; ctx.progress(i, todo.length, `${ta.name}…`); await copyOne(src, tgt, ta); }
+    } else {
+      // крупные таблицы — первыми, чтобы потоки закончили примерно одновременно
+      queue.sort((a, b) => (b.rowEstimate || 0) - (a.rowEstimate || 0));
+      ctx.log(`Параллельная загрузка: ${parallel} потоков`);
+      const worker = async () => {
+        const s = await connect(srcConn), t = await connect(tgtConn);
+        try {
+          if (replicaRole) await t.exec(`SET session_replication_role = replica`).catch(() => {});
+          while (queue.length && !stop) { ctx.checkCancel(); await copyOne(s, t, queue.shift()); }
+        } finally { await s.close(); await t.close(); }
+      };
+      await Promise.all(Array.from({ length: Math.min(parallel, queue.length) }, worker));
     }
+    for (const n of skip) results.push({ table: selected.find(t => K(t.name) === n)?.name || n, status: 'skipped', rows: 0, ms: 0 });
 
     // 5. Последовательности
     if (p.syncSequences) {
@@ -297,6 +319,7 @@ function sum(results) {
     tables: results.length,
     done: results.filter(r => r.status === 'done').length,
     error: results.filter(r => r.status === 'error').length,
+    skipped: results.filter(r => r.status === 'skipped').length,
     rows: results.reduce((s, r) => s + (r.rows || 0), 0),
   };
 }

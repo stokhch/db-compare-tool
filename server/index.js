@@ -10,6 +10,14 @@ const { listObjects } = require('./meta/objects');
 const { renderScript } = require('./compare/syncschema');
 const { runApplySql } = require('./copy/applysql');
 const { runDataSync, SYNC_DIR } = require('./compare/syncdata');
+const { runProfile } = require('./migrate/profile');
+const { runPipeline } = require('./migrate/pipeline');
+const { runAggCompare } = require('./verify/aggregates');
+const { runDelta } = require('./migrate/delta');
+const { runExtras } = require('./migrate/extras');
+const { runCodeScan } = require('./migrate/codescan');
+const { runQueryCompare, topSql } = require('./verify/queries');
+const { runCalcVerify } = require('./verify/calc');
 const { renderReport } = require('./lib/report');
 const { runSchemaCompare } = require('./compare/schema');
 const { runDataCompare } = require('./compare/data');
@@ -43,6 +51,7 @@ app.post('/api/connections/test', h(async req => {
 }));
 app.get('/api/connections/:id/schemas', h(req => withDb(req.params.id, db => db.schemas())));
 app.get('/api/connections/:id/objects', h(req => withDb(req.params.id, db => listObjects(db, req.query.schema || db.defaultSchema))));
+app.get('/api/connections/:id/topsql', h(req => withDb(req.params.id, db => topSql(db, req.query.schema || db.defaultSchema, req.query.limit))));
 app.get('/api/connections/:id/tables', h(req => withDb(req.params.id, db => listTables(db, req.query.schema || db.defaultSchema))));
 
 // ---------- Настройки и утилиты ----------
@@ -70,6 +79,14 @@ const JOB_TYPES = {
   datapump: { title: p => `Data Pump: ${p.sourceSchema} → ${p.targetSchema || p.sourceSchema}`, run: runDataPump },
   ora2pg: { title: p => `ora2pg ${p.action}: ${p.sourceSchema}`, run: runOra2pg },
   'data-sync': { title: p => `Синхронизация данных: ${p.sourceSchema} → ${p.targetSchema}${p.apply ? ' (с выполнением)' : ''}`, run: runDataSync },
+  profile: { title: p => `Профиль данных: ${p.sourceSchema}`, run: runProfile },
+  pipeline: { title: p => `Миграция: ${p.sourceSchema} → ${p.targetSchema}${p.resumeJobId ? ' (продолжение)' : ''}`, run: runPipeline },
+  'agg-compare': { title: p => `Агрегаты: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runAggCompare },
+  delta: { title: p => `Догрузка изменений: ${p.sourceSchema} → ${p.targetSchema}${p.apply ? ' (с выполнением)' : ''}`, run: runDelta },
+  extras: { title: p => `Права и окружение: ${p.sourceSchema}`, run: runExtras },
+  codescan: { title: p => `Проверка кода: ${p.path}`, run: runCodeScan },
+  'query-compare': { title: p => `Запросы: ${(p.queries || []).length}${p.includeViews ? ' + представления' : ''}`, run: runQueryCompare },
+  'calc-verify': { title: p => `Сверка расчётов: ${(p.tables || []).length} таблиц`, run: runCalcVerify },
   'apply-sql': { title: p => `Выполнение скрипта: ${(p.statements || []).length} операторов`, run: runApplySql },
 };
 app.post('/api/jobs/:type', h(req => {

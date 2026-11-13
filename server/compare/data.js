@@ -371,4 +371,4 @@ function summarize(results) {
   return s;
 }
 
-module.exports = { runDataCompare };
+module.exports = { runDataCompare, compareTable };

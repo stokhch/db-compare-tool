@@ -88,7 +88,22 @@ function createSink(dir, tgt, tgtSchema, opts) {
         missing(nr) {
           if (opts.insert === false) return;
           const raw = nr.raw;
-          write(fdUp, `INSERT INTO ${tq} (${cols.join(', ')}) VALUES (${all.map((c, i) => lit(raw[i], c.b)).join(', ')})`);
+          const vals = all.map((c, i) => lit(raw[i], c.b));
+          if (opts.upsert && nk) {
+            // Догрузка: строка могла быть в приёмнике вне окна отбора — вставка или обновление
+            const keyCols = cols.slice(0, nk), valCols = cols.slice(nk);
+            if (tgt.type === 'postgres') {
+              const set = valCols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
+              write(fdUp, `INSERT INTO ${tq} (${cols.join(', ')}) VALUES (${vals.join(', ')}) ON CONFLICT (${keyCols.join(', ')}) DO ${set ? `UPDATE SET ${set}` : 'NOTHING'}`);
+            } else {
+              const sel = vals.map((v, i) => `${v} AS ${cols[i]}`).join(', ');
+              const on = keyCols.map(c => `d.${c} = s.${c}`).join(' AND ');
+              const upd = valCols.length ? ` WHEN MATCHED THEN UPDATE SET ${valCols.map(c => `d.${c} = s.${c}`).join(', ')}` : '';
+              write(fdUp, `MERGE INTO ${tq} d USING (SELECT ${sel} FROM dual) s ON (${on})${upd} WHEN NOT MATCHED THEN INSERT (${cols.join(', ')}) VALUES (${cols.map(c => `s.${c}`).join(', ')})`);
+            }
+          } else {
+            write(fdUp, `INSERT INTO ${tq} (${cols.join(', ')}) VALUES (${vals.join(', ')})`);
+          }
           local.insert++;
         },
         different(na, nb, diffCols) {
@@ -129,7 +144,7 @@ async function runDataSync(p, ctx) {
   fs.mkdirSync(dir, { recursive: true });
   const tgtConn = getConnection(p.targetId);
   const tgt = await connect(tgtConn); // нужен только для quote/qualify и выполнения
-  const opts = { insert: p.insert !== false, update: p.update !== false, delete: p.delete === true };
+  const opts = { insert: p.insert !== false, update: p.update !== false, delete: p.delete === true, upsert: !!p.upsert };
   const sink = createSink(dir, tgt, p.targetSchema, opts);
   try {
     ctx.log(`Скрипт синхронизации данных: ${opts.insert ? 'INSERT ' : ''}${opts.update ? 'UPDATE ' : ''}${opts.delete ? 'DELETE' : ''}`);
