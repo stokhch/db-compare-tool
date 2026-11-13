@@ -54,9 +54,16 @@ async function loadOracleMeta(db, schema, opts = {}, ctx) {
     FROM all_tab_columns
     WHERE owner = :own
     ORDER BY table_name, column_id`, b);
+  const viewCols = new Map(); // колонки представлений и мат. представлений
   for (const c of cols) {
     const t = tables.get(c.table_name);
-    if (!t) continue;
+    if (!t) {
+      if (!viewCols.has(c.table_name)) viewCols.set(c.table_name, []);
+      const vc = { name: c.column_name, dataType: c.data_type, type: oracleTypeString(c), precision: c.data_type === 'NUMBER' ? num(c.data_precision) : null, scale: c.data_type === 'NUMBER' ? num(c.data_scale) : null };
+      vc.family = oracleFamily(vc);
+      viewCols.get(c.table_name).push(vc);
+      continue;
+    }
     const col = {
       name: c.column_name,
       dataType: c.data_type,
@@ -160,8 +167,8 @@ async function loadOracleMeta(db, schema, opts = {}, ctx) {
   const triggers = trg.map(r => ({ name: r.trigger_name, table: r.table_name, enabled: r.status === 'ENABLED', event: r.triggering_event, timing: r.trigger_type }));
   for (const tr of triggers) { const t = tables.get(tr.table); if (t) t.triggers.push(tr.name); }
 
-  const views = (await db.query(`SELECT view_name FROM all_views WHERE owner = :own ORDER BY view_name`, b)).map(r => ({ name: r.view_name }));
-  const mviews = (await db.query(`SELECT mview_name FROM all_mviews WHERE owner = :own ORDER BY mview_name`, b)).map(r => ({ name: r.mview_name }));
+  const views = (await db.query(`SELECT view_name FROM all_views WHERE owner = :own ORDER BY view_name`, b)).map(r => ({ name: r.view_name, columns: viewCols.get(r.view_name) || [] }));
+  const mviews = (await db.query(`SELECT mview_name FROM all_mviews WHERE owner = :own ORDER BY mview_name`, b)).map(r => ({ name: r.mview_name, columns: viewCols.get(r.mview_name) || [] }));
   const sequences = (await db.query(`
     SELECT sequence_name, last_number, increment_by, min_value, max_value, cycle_flag
     FROM all_sequences WHERE sequence_owner = :own ORDER BY sequence_name`, b))

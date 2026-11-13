@@ -128,12 +128,15 @@
       <SchemaSyncPanel v-if="exResult" :sync="exResult.sync" :target-id="tgt.connId" />
     </div>
 
-    <JobPanel v-if="jobId" :job-id="jobId" :report="false" @done="onDone" @update="onUpdate" />
+    <!-- ===== Зависимости пакетов ===== -->
+    <DepsTab v-if="tab === 3" ref="depsTab" :src="src" :tgt="tgt" />
+
+    <JobPanel v-if="jobId && tab < 3" :job-id="jobId" :report="false" @done="onDone" @update="onUpdate" />
   </div>
 </template>
 
 <script setup>
-import { computed, onActivated, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onActivated, onMounted, reactive, ref } from 'vue';
 import { DxTabs } from 'devextreme-vue/tabs';
 import { DxButton } from 'devextreme-vue/button';
 import { DxCheckBox } from 'devextreme-vue/check-box';
@@ -147,11 +150,13 @@ import DbPicker from '../components/DbPicker.vue';
 import ObjectPicker from '../components/ObjectPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
 import SchemaSyncPanel from '../components/SchemaSyncPanel.vue';
+import DepsTab from '../components/DepsTab.vue';
 import { api, safe, toast, fmtMs, fmtNum } from '../api';
 import { lastPick, rememberPick, connType } from '../store';
 import { useJobFromRoute } from '../jobroute';
 
-const tabs = [{ text: 'Конвейер миграции' }, { text: 'Догрузка изменений' }, { text: 'Права и окружение' }];
+const tabs = [{ text: 'Конвейер миграции' }, { text: 'Догрузка изменений' }, { text: 'Права и окружение' }, { text: 'Зависимости пакетов' }];
+const depsTab = ref(null);
 const tab = ref(0);
 const lp = lastPick();
 const src = ref(lp.src || { connId: null, schema: '' });
@@ -239,9 +244,9 @@ function onDone(j) {
   if (j.type === 'delta') dlResult.value = j.result;
   if (j.type === 'extras') exResult.value = j.result;
 }
-useJobFromRoute(['pipeline', 'delta', 'extras'], j => {
-  tab.value = { pipeline: 0, delta: 1, extras: 2 }[j.type];
-  jobId.value = j.id;
+useJobFromRoute(['pipeline', 'delta', 'extras', 'deps-check'], async j => {
+  tab.value = { pipeline: 0, delta: 1, extras: 2, 'deps-check': 3 }[j.type];
+  if (tab.value === 3) { await nextTick(); depsTab.value?.show(j); } else jobId.value = j.id;
 });
 onMounted(loadRuns);
 onActivated(loadRuns);

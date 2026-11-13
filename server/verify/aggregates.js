@@ -9,6 +9,7 @@ const { filterMeta } = require('../meta/objects');
 const { getConnection, publicConnection } = require('../lib/store');
 const { GROUP } = require('../lib/typemap');
 const { canonDecimal, canonDateTime } = require('../lib/normalize');
+const { periodWhere, andWhere } = require('../lib/period');
 
 function kindOf(ca, cb) {
   const ga = GROUP[ca.family], gb = GROUP[cb.family];
@@ -109,12 +110,15 @@ async function aggTable(src, tgt, ta, tb, spec, p, K) {
   if (gcolName && (!ga || !gb)) throw new Error(`Колонка группировки ${gcolName} не найдена`);
   const effGran = ga && GROUP[ga.family] !== 'datetime' ? 'value' : gran;
 
+  const periodDesc = new Set();
   const build = (db, schema, table, side, gcol) => {
     const sel = [`COUNT(*) AS c_rows`];
     cols.forEach((c, i) => (side === 'a' ? c.a : c.b).forEach((e, j) => sel.push(`${e.sql} AS c${i}_${j}`)));
     const g = gcol ? groupExpr(db, gcol, effGran) : null;
     let sql = `SELECT ${g ? `${g} AS grp, ` : ''}${sel.join(', ')} FROM ${db.qualify(schema, table)}`;
-    const where = side === 'a' ? (spec.sourceWhere || p.sourceWhere) : (spec.targetWhere || p.targetWhere);
+    const pw = periodWhere(db, side === 'a' ? ta : tb, p.period, side === 'a' ? 'source' : 'target');
+    if (pw.applied) periodDesc.add(pw.parts.join(', '));
+    const where = andWhere(side === 'a' ? (spec.sourceWhere || p.sourceWhere) : (spec.targetWhere || p.targetWhere), pw.where);
     if (where) sql += ` WHERE ${where}`;
     if (g) sql += ` GROUP BY ${g}`;
     return sql;
@@ -149,6 +153,7 @@ async function aggTable(src, tgt, ta, tb, spec, p, K) {
     table: ta.name, targetTable: tb.name, status: bad.length ? 'different' : 'equal', groupBy: gcolName || null, granularity: gcolName ? effGran : null,
     rowsSource: rowsA, rowsTarget: rowsB, groups: groups.length, badGroups: bad.length, columns: cols.length,
     diffColumns: [...new Set(bad.flatMap(g => g.diffs.map(d => d.column)))],
+    periodFilter: [...periodDesc].join('; ') || undefined,
     ms: Date.now() - t0, groupsDetail: (p.showAllGroups ? groups : bad).slice(0, 500),
   };
   // Условия для построчной проверки только разошедшихся групп
@@ -203,7 +208,7 @@ async function runAggCompare(p, ctx) {
       const r = await runDataCompare({
         sourceId: p.sourceId, targetId: p.targetId, sourceSchema: p.sourceSchema, targetSchema: p.targetSchema,
         tables: bad.map(b => ({ source: b.table, target: b.targetTable, sourceWhere: b.sourceWhere, targetWhere: b.targetWhere })),
-        absTolerance: p.absTolerance, relTolerance: p.relTolerance, emptyAsNull: p.emptyAsNull,
+        absTolerance: p.absTolerance, relTolerance: p.relTolerance, emptyAsNull: p.emptyAsNull, period: p.period,
       }, sub);
       detail = { summary: r.summary, tables: r.tables };
     }

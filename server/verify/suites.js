@@ -13,7 +13,7 @@ const RUNS = path.join(DATA_DIR, 'suite-runs');
 fs.mkdirSync(RUNS, { recursive: true });
 
 // ---------- Хранилище сохранённых наборов (запросы, сценарии расчётов, регламенты) ----------
-const KINDS = ['querysets', 'scenarios', 'suites'];
+const KINDS = ['querysets', 'scenarios', 'suites', 'unitsuites', 'readiness'];
 function all() { return readJson(FILE, {}); }
 function list(kind) { if (!KINDS.includes(kind)) throw new Error('Неизвестный тип'); return all()[kind] || []; }
 function get(kind, id) { return list(kind).find(x => x.id === id || x.name === id); }
@@ -35,7 +35,7 @@ function remove(kind, id) {
 // ---------- Оценка результата проверки ----------
 const CHECK_TITLES = {
   'schema-compare': 'Структура', 'data-compare': 'Данные', 'agg-compare': 'Агрегаты', 'query-compare': 'Запросы',
-  'calc-verify': 'Расчёты', profile: 'Профиль данных', 'data-sync': 'Синхронизация данных', delta: 'Догрузка',
+  'calc-verify': 'Расчёты', profile: 'Профиль данных', readiness: 'Готовность данных', 'unit-tests': 'Юнит-тесты', 'deps-check': 'Зависимости пакетов', 'data-sync': 'Синхронизация данных', delta: 'Догрузка',
 };
 function verdict(type, s) {
   if (!s) return { status: 'error', text: 'нет результата', problems: 1 };
@@ -45,6 +45,9 @@ function verdict(type, s) {
     case 'agg-compare': { const p = (s.different || 0) + (s.error || 0); return { status: p ? 'fail' : 'ok', text: `таблиц ${s.tables}: расхождения в ${s.different}, ошибок ${s.error}`, problems: p }; }
     case 'query-compare': { const p = (s.different || 0) + (s.error || 0); return { status: p ? 'fail' : s.slow ? 'warn' : 'ok', text: `запросов ${s.queries}: отличаются ${s.different}, ошибок ${s.error}, медленнее ${s.slow}`, problems: p }; }
     case 'calc-verify': { const p = (s.different || 0) + (s.error || 0); return { status: p ? 'fail' : 'ok', text: `таблиц ${s.tables}: отличаются ${s.different}, ошибок ${s.error}`, problems: p }; }
+    case 'readiness': { const p = s.error || 0; return { status: p ? 'fail' : s.warning ? 'warn' : 'ok', text: `таблиц ${s.tables}: готово ${s.ok}, пусто в обеих ${s.warning}, расхождений ${s.error}`, problems: p }; }
+    case 'unit-tests': { const p = (s.failed || 0) + (s.notFound || 0); return { status: p ? 'fail' : 'ok', text: `функций ${s.functions}: вызовов ${s.calls}, не прошло ${s.failed}, не найдено ${s.notFound}`, problems: p }; }
+    case 'deps-check': { const p = s.missing || 0; return { status: p ? 'fail' : 'ok', text: `объектов ${s.objects}: не хватает ${s.missing}`, problems: p }; }
     case 'profile': return { status: s.error ? 'fail' : s.warning ? 'warn' : 'ok', text: `колонок ${s.columns}: ошибок ${s.error || 0}, предупреждений ${s.warning || 0}`, problems: s.error || 0 };
     default: return { status: 'ok', text: JSON.stringify(s).slice(0, 200), problems: 0 };
   }

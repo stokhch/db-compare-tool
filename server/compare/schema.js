@@ -3,7 +3,7 @@
 // Идея как у ora2pg TEST: объекты и их количество с обеих сторон + детальный diff колонок.
 const { connect } = require('../db');
 const { loadMeta } = require('../meta');
-const { compatibility } = require('../lib/typemap');
+const { compatibility, GROUP } = require('../lib/typemap');
 const { getConnection, publicConnection } = require('../lib/store');
 const { plpgsqlCheck } = require('./pgcheck');
 const { filterMeta } = require('../meta/objects');
@@ -14,7 +14,7 @@ const CAT = {
   fks: 'Внешние ключи', checks: 'CHECK-ограничения', indexes: 'Индексы', triggers: 'Триггеры',
   views: 'Представления', mviews: 'Материализованные представления', sequences: 'Последовательности',
   routines: 'Функции и процедуры', types: 'Типы', rows: 'Количество строк', invalid: 'Невалидные объекты',
-  pgcheck: 'Код PostgreSQL (plpgsql_check)',
+  pgcheck: 'Код PostgreSQL (plpgsql_check)', viewcols: 'Колонки представлений',
 };
 
 function makeKey(caseSensitive) { return n => (n == null ? '' : caseSensitive ? String(n) : String(n).toLowerCase()); }
@@ -187,8 +187,39 @@ async function runSchemaCompare(p, ctx) {
     if (K(a.table) !== K(b.table)) issues.push(`таблица ${a.table} → ${b.table}`);
     add(CAT.triggers, a.name, issues.length ? 'warning' : 'ok', issues.length ? 'different' : 'equal', `${a.table}`, `${b.table}`, issues.join('; '), a.table);
   });
-  matchLists(CAT.views, A.views, B.views);
-  matchLists(CAT.mviews, A.mviews, B.mviews);
+  // Представления и мат. представления: наличие и состав колонок
+  const viewColumns = (kind, va, vb) => {
+    const mb = new Map((vb.columns || []).map(c => [K(c.name), c]));
+    for (const ca of va.columns || []) {
+      const cb = mb.get(K(ca.name));
+      const obj = `${va.name}.${ca.name}`;
+      if (!cb) { add(CAT.viewcols, obj, 'error', 'missing_in_target', ca.type, '', `Колонки нет в ${kind} приёмника — запросы и процедуры, которые её читают, упадут`, va.name); continue; }
+      mb.delete(K(ca.name));
+      const ga = GROUP[ca.family], gb = GROUP[cb.family];
+      if (ga !== gb && ga !== 'other' && gb !== 'other') add(CAT.viewcols, obj, 'warning', 'different', ca.type, cb.type, 'Разные группы типов', va.name);
+      else add(CAT.viewcols, obj, 'ok', 'equal', ca.type, cb.type, '', va.name);
+    }
+    for (const cb of mb.values()) add(CAT.viewcols, `${vb.name}.${cb.name}`, 'warning', 'extra_in_target', '', cb.type, `Колонка есть только в ${kind} приёмника`, vb.name);
+  };
+  matchLists(CAT.views, A.views, B.views, x => x.name, (a, b) => {
+    add(CAT.views, a.name, 'ok', 'equal', a.name, b.name, '');
+    viewColumns('представлении', a, b);
+  });
+  // мат. представление Oracle могло стать обычным представлением в PostgreSQL — ищем и среди них
+  const bViewsByName = new Map(B.views.map(v => [K(v.name), v]));
+  matchLists(CAT.mviews, A.mviews, B.mviews, x => x.name, (a, b) => {
+    add(CAT.mviews, a.name, 'ok', 'equal', a.name, b.name, '');
+    viewColumns('мат. представлении', a, b);
+  });
+  for (const a of A.mviews) {
+    const v = bViewsByName.get(K(a.name));
+    if (v && !B.mviews.some(m => K(m.name) === K(a.name))) {
+      // найдено как обычное представление
+      const f = findings.find(x => x.category === CAT.mviews && x.object === a.name && x.kind === 'missing_in_target');
+      if (f) { f.status = 'warning'; f.kind = 'different'; f.target = `${v.name} (VIEW)`; f.message = 'В приёмнике это обычное представление, не материализованное'; }
+      viewColumns('представлении', a, v);
+    }
+  }
   matchLists(CAT.sequences, A.sequences, B.sequences, x => x.name, (a, b) => {
     const va = a.value == null ? null : Number(a.value), vb = b.value == null ? null : Number(b.value);
     let lvl = 'ok', msg = '';

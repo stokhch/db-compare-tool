@@ -8,6 +8,7 @@
         <div class="arrow">⇄</div>
         <DbPicker v-model="tgt" label="Приёмник" />
       </div>
+      <PeriodFilter v-model="period" />
     </div>
 
     <!-- ===== Запросы ===== -->
@@ -80,9 +81,23 @@
 
     <!-- ===== Расчёты ===== -->
     <div v-show="tab === 1" class="panel">
-      <p class="hint" style="margin-top:0">Расчёт запускается в обеих базах, затем итоговые таблицы сравниваются построчно <b>в тех же сессиях</b> и обе транзакции откатываются —
-        базы не меняются. Если процедура Oracle сама делает COMMIT, откатить её нельзя — запускайте только на тестовой копии.
-        Операторы разделяйте строкой из одного символа «/» (как в SQL*Plus).</p>
+      <p class="hint" style="margin-top:0">Расчёт запускается в обеих базах, затем итоговые таблицы сравниваются построчно <b>в тех же сессиях</b>.
+        Операторы разделяйте строкой из одного символа «/» (как в SQL*Plus). OUT-параметры процедур (через DBMS_OUTPUT «OUT:…» в Oracle и строку результата CALL в PostgreSQL)
+        тоже сравниваются. Фильтр периода и пользователя сверху ограничивает сравнение строк.</p>
+      <div class="sub">
+        <b>Шаблон по процедурам раздела</b>
+        <span class="hint"> — выберите процедуры Oracle в порядке запуска (например, maket_pt.del_pt и maket_pt.ras_pt): шаги для обеих баз, очистка и итоговые таблицы заполнятся сами.
+          Имена в PostgreSQL ищутся как <span class="mono">пакет_процедура</span> (plsql2pg) и <span class="mono">пакет.процедура</span> (ora2pg). Даты берутся из фильтра периода.</span>
+        <div class="row" style="margin-top:6px">
+          <div class="field col"><label>Расчёт (по порядку)</label>
+            <DxTagBox v-model:value="tpl.calls" :items="procs" display-expr="title" value-expr="key" :search-enabled="true" placeholder="Процедуры расчёта" /></div>
+          <div class="field col"><label>Очистка периода перед расчётом</label>
+            <DxTagBox v-model:value="tpl.cleanup" :items="procs" display-expr="title" value-expr="key" :search-enabled="true" placeholder="Например, …del…" /></div>
+          <div class="field" style="align-self:flex-end"><DxButton text="Построить" icon="detailslayout" styling-mode="outlined" :disabled="!ready || !tpl.calls.length || connType(src.connId) !== 'oracle'" @click="buildTpl" /></div>
+        </div>
+        <div v-if="src.connId && connType(src.connId) !== 'oracle'" class="hint">Шаблон строится по процедурам Oracle — выберите источник Oracle.</div>
+        <div v-for="(n, i) in tpl.notes" :key="i" class="warning">{{ n }}</div>
+      </div>
       <div class="row">
         <div class="col"><div class="field"><label>Шаги в источнике</label>
           <DxTextArea v-model:value="cv.sourceSteps" :height="140" placeholder="BEGIN maket_pt_2026.raschet(DATE '2026-01-01'); END;&#10;/" /></div></div>
@@ -90,24 +105,42 @@
           <DxTextArea v-model:value="cv.targetSteps" :height="140" placeholder="CALL maket_pt_2026_raschet('2026-01-01')" /></div></div>
       </div>
       <div class="row">
+        <div class="col"><div class="field"><label>Перед расчётом в источнике (очистка)</label><DxTextArea v-model:value="cv.sourcePre" :height="70" /></div></div>
+        <div class="col"><div class="field"><label>Перед расчётом в приёмнике (пусто — те же)</label><DxTextArea v-model:value="cv.targetPre" :height="70" /></div></div>
+      </div>
+      <div class="row">
+        <div class="col"><div class="field"><label>После сравнения в источнике</label><DxTextArea v-model:value="cv.sourcePost" :height="60" /></div></div>
+        <div class="col"><div class="field"><label>После сравнения в приёмнике (пусто — те же)</label><DxTextArea v-model:value="cv.targetPost" :height="60" /></div></div>
+      </div>
+      <div class="row">
         <div class="field col"><label>Итоговые таблицы для сравнения</label>
           <DxTagBox v-model:value="cv.tables" :items="tableNames" :search-enabled="true" :accept-custom-value="true" placeholder="Выберите таблицы" /></div>
         <div class="field" style="width:150px"><label>Допуск чисел</label><DxNumberBox v-model:value="cv.absTolerance" :min="0" format="#0.##########" /></div>
       </div>
       <div class="toolbar">
-        <DxCheckBox v-model:value="cv.rollback" text="Откатить после сравнения" />
-        <DxButton text="Запустить и сверить" icon="runner" type="default" :disabled="!ready || !cv.sourceSteps || !cv.tables.length" @click="runCalc" />
+        <div class="field" style="width:330px;margin:0"><label>Что делать с данными</label>
+          <DxSelectBox v-model:value="cv.rollback" :items="[{ v: true, t: 'Откатить транзакции после сравнения' }, { v: false, t: 'Фиксировать (очистка периода шагами «перед»)' }]" value-expr="v" display-expr="t" /></div>
+        <DxButton text="Запустить и сверить" icon="runner" type="default" :disabled="!ready || !cv.sourceSteps || (!cv.tables.length && !cv.sourceSteps.includes('OUT:'))" @click="runCalc" />
         <DxSelectBox v-model:value="cv.scenarioId" :items="scenarios" value-expr="id" display-expr="name" placeholder="Сохранённые сценарии…" :width="230" :show-clear-button="true" @value-changed="loadScenario" />
         <DxButton text="Сохранить сценарий" icon="save" styling-mode="text" @click="saveScenario" />
         <AddToSuite type="calc-verify" :params="calcParams" default-title="Расчёты" />
       </div>
+      <div v-if="!cv.rollback" class="warning">Изменения расчёта останутся в обеих базах. Повторный запуск корректен, только если шаги «перед» очищают период (процедура del_* раздела).</div>
       <template v-if="cvResult">
         <div class="cards">
           <div class="card"><div class="v ok">{{ cvResult.summary.equal }}</div><div class="l">таблиц совпадает</div></div>
           <div class="card"><div class="v error">{{ cvResult.summary.different }}</div><div class="l">отличаются</div></div>
+          <div v-if="cvResult.outs && cvResult.outs.length" class="card"><div class="v" :class="cvResult.summary.outsDifferent ? 'error' : 'ok'">{{ cvResult.outs.length - cvResult.summary.outsDifferent }} / {{ cvResult.outs.length }}</div><div class="l">ответов процедур совпало</div></div>
           <div class="card"><div class="v">{{ fmtMs(cvResult.summary.msSource) }} → {{ fmtMs(cvResult.summary.msTarget) }}</div><div class="l">время расчёта</div></div>
         </div>
         <div v-if="cvResult.error" class="error" style="margin-bottom:8px">{{ cvResult.error }}</div>
+        <DxDataGrid v-if="cvResult.outs && cvResult.outs.length" :data-source="cvResult.outs" :show-borders="true" style="margin-bottom:10px">
+          <DxColumn data-field="step" caption="Шаг" :width="60" />
+          <DxColumn data-field="source" caption="Ответ Oracle / источника" css-class="mono" />
+          <DxColumn data-field="target" caption="Ответ приёмника" css-class="mono" />
+          <DxColumn data-field="status" caption="" cell-template="os" :width="110" />
+          <template #os="{ data }"><span :class="data.value === 'equal' ? 'ok' : 'error'">{{ data.value === 'equal' ? 'совпадает' : 'отличается' }}</span></template>
+        </DxDataGrid>
         <DxDataGrid :data-source="cvResult.tables" :show-borders="true">
           <DxColumn data-field="table" caption="Таблица" />
           <DxColumn data-field="status" caption="Статус" :calculate-display-value="r => ({ equal: 'совпадает', different: 'отличается', error: r.error }[r.status])" />
@@ -180,7 +213,13 @@
       </template>
     </div>
 
-    <JobPanel v-if="jobId" :job-id="jobId" :report="false" @done="onDone" />
+    <!-- ===== Готовность данных ===== -->
+    <ReadinessTab v-if="tab === 3" ref="readinessTab" :src="src" :tgt="tgt" :period="period" />
+
+    <!-- ===== Юнит-тесты ===== -->
+    <UnitTestsTab v-if="tab === 4" ref="unitTab" :src="src" :tgt="tgt" />
+
+    <JobPanel v-if="jobId && tab < 3" :job-id="jobId" :report="false" @done="onDone" />
 
     <DxPopup v-model:visible="qEdit.visible" title="Запрос" :width="860" height="auto" :show-close-button="true">
       <div>
@@ -213,7 +252,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, onMounted } from 'vue';
+import { computed, reactive, ref, onMounted, nextTick, watch } from 'vue';
 import { DxTabs } from 'devextreme-vue/tabs';
 import { DxButton } from 'devextreme-vue/button';
 import { DxCheckBox } from 'devextreme-vue/check-box';
@@ -227,11 +266,17 @@ import { DxDataGrid, DxColumn, DxSelection, DxEditing, DxSearchPanel, DxScrollin
 import DbPicker from '../components/DbPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
 import AddToSuite from '../components/AddToSuite.vue';
+import PeriodFilter from '../components/PeriodFilter.vue';
+import ReadinessTab from '../components/ReadinessTab.vue';
+import UnitTestsTab from '../components/UnitTestsTab.vue';
 import { api, safe, toast, fmtMs, fmtNum } from '../api';
-import { lastPick, rememberPick } from '../store';
+import { lastPick, rememberPick, connType } from '../store';
 import { useJobFromRoute } from '../jobroute';
 
-const tabs = [{ text: 'Сравнение запросов' }, { text: 'Сверка расчётов' }, { text: 'Сверка по агрегатам' }];
+const tabs = [{ text: 'Сравнение запросов' }, { text: 'Сверка расчётов' }, { text: 'Сверка по агрегатам' }, { text: 'Готовность данных' }, { text: 'Юнит-тесты функций' }];
+const period = ref(null);
+const readinessTab = ref(null);
+const unitTab = ref(null);
 const tab = ref(0);
 const lp = lastPick();
 const src = ref(lp.src || { connId: null, schema: '' });
@@ -274,7 +319,30 @@ const queryParams = () => (ready.value ? { ...base(), queries: qs.queries, inclu
 function runQueries() { qResult.value = null; start('query-compare', queryParams()); }
 
 // --- расчёты
-const cv = reactive({ sourceSteps: '', targetSteps: '', tables: [], absTolerance: 0, rollback: true, scenarioId: null });
+const cv = reactive({ sourceSteps: '', targetSteps: '', sourcePre: '', targetPre: '', sourcePost: '', targetPost: '', tables: [], absTolerance: 0, rollback: true, scenarioId: null });
+const tpl = reactive({ calls: [], cleanup: [], notes: [] });
+const procs = ref([]);
+async function loadProcs() {
+  procs.value = [];
+  if (!src.value.connId || !src.value.schema) return;
+  const r = await safe(() => api.get(`/connections/${src.value.connId}/procedures?schema=${encodeURIComponent(src.value.schema)}`));
+  if (r) procs.value = r.map(x => ({ ...x, key: `${x.package || ''}.${x.procedure}`, title: x.package ? `${x.package}.${x.procedure}` : x.procedure }));
+}
+watch(() => [src.value.connId, src.value.schema], () => { loadProcs(); loadTableNames(); });
+async function buildTpl() {
+  const pick = keys => keys.map(k => procs.value.find(p => p.key === k)).filter(Boolean).map(p => ({ package: p.package, procedure: p.procedure }));
+  const now = new Date(); const m = n => String(n).padStart(2, '0');
+  const dateFrom = (period.value && period.value.from) || `${now.getFullYear()}-${m(now.getMonth() + 1)}-01`;
+  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const dateTo = (period.value && period.value.to) || `${last.getFullYear()}-${m(last.getMonth() + 1)}-${m(last.getDate())}`;
+  const r = await safe(() => api.post('/calc/template', { ...base(), calls: pick(tpl.calls), cleanup: pick(tpl.cleanup), dateFrom, dateTo }));
+  if (!r) return;
+  Object.assign(cv, { sourceSteps: r.sourceSteps, targetSteps: r.targetSteps, sourcePre: r.sourcePre, targetPre: r.targetPre });
+  if (r.suggested && r.suggested.length) cv.tables = r.suggested;
+  if (r.tables && r.tables.length) tableNames.value = [...new Set([...tableNames.value, ...r.tables])];
+  tpl.notes = r.notes || [];
+  toast(`Шаблон построен за ${dateFrom} — ${dateTo}${r.suggested && r.suggested.length ? `; предложено таблиц: ${r.suggested.length}` : ''}`);
+}
 const cvResult = ref(null);
 const scenarios = ref([]);
 const tableNames = ref([]);
@@ -283,14 +351,17 @@ async function loadTableNames() {
   const r = await safe(() => api.get(`/connections/${src.value.connId}/tables?schema=${encodeURIComponent(src.value.schema)}`));
   if (r) tableNames.value = r.map(t => t.name);
 }
-const calcParams = () => (ready.value && cv.sourceSteps ? { ...base(), sourceSteps: cv.sourceSteps, targetSteps: cv.targetSteps || undefined, tables: cv.tables, absTolerance: cv.absTolerance, rollback: cv.rollback } : null);
+const calcParams = () => (ready.value && cv.sourceSteps ? {
+  ...base(), sourceSteps: cv.sourceSteps, targetSteps: cv.targetSteps || undefined, tables: cv.tables, absTolerance: cv.absTolerance, rollback: cv.rollback, period: period.value,
+  sourcePre: cv.sourcePre || undefined, targetPre: cv.targetPre || undefined, sourcePost: cv.sourcePost || undefined, targetPost: cv.targetPost || undefined,
+} : null);
 function runCalc() { cvResult.value = null; start('calc-verify', calcParams()); }
-function loadScenario(e) { const s = scenarios.value.find(x => x.id === e.value); if (s) Object.assign(cv, { sourceSteps: s.sourceSteps, targetSteps: s.targetSteps, tables: s.tables || [], absTolerance: s.absTolerance || 0 }); }
+function loadScenario(e) { const s = scenarios.value.find(x => x.id === e.value); if (s) Object.assign(cv, { sourceSteps: s.sourceSteps, targetSteps: s.targetSteps, sourcePre: s.sourcePre || '', targetPre: s.targetPre || '', sourcePost: s.sourcePost || '', targetPost: s.targetPost || '', rollback: s.rollback !== false, tables: s.tables || [], absTolerance: s.absTolerance || 0 }); }
 async function saveScenario() {
   const cur = scenarios.value.find(x => x.id === cv.scenarioId);
   const name = cur ? cur.name : prompt('Название сценария', 'Расчёт');
   if (!name) return;
-  const r = await safe(() => api.post('/saved/scenarios', { id: cur && cur.id, name, sourceSteps: cv.sourceSteps, targetSteps: cv.targetSteps, tables: cv.tables, absTolerance: cv.absTolerance }));
+  const r = await safe(() => api.post('/saved/scenarios', { id: cur && cur.id, name, sourceSteps: cv.sourceSteps, targetSteps: cv.targetSteps, sourcePre: cv.sourcePre, targetPre: cv.targetPre, sourcePost: cv.sourcePost, targetPost: cv.targetPost, rollback: cv.rollback, tables: cv.tables, absTolerance: cv.absTolerance }));
   if (r) { toast('Сценарий сохранён'); await loadSets(); cv.scenarioId = r.id; }
 }
 
@@ -305,7 +376,7 @@ async function loadAggTables() {
 const aggParams = () => {
   if (!ready.value) return null;
   const pick = ag.selected.length ? ag.tables.filter(t => ag.selected.includes(t.source)) : ag.tables;
-  return { ...base(), tables: pick.length ? pick.map(t => ({ source: t.source, groupBy: t.groupBy || undefined })) : undefined, granularity: ag.granularity, absTolerance: ag.absTolerance, detailOnMismatch: ag.detailOnMismatch };
+  return { ...base(), tables: pick.length ? pick.map(t => ({ source: t.source, groupBy: t.groupBy || undefined })) : undefined, granularity: ag.granularity, absTolerance: ag.absTolerance, detailOnMismatch: ag.detailOnMismatch, period: period.value };
 };
 function runAgg() { agResult.value = null; start('agg-compare', aggParams()); }
 
@@ -315,6 +386,9 @@ function onDone(j) {
   if (j.type === 'calc-verify') cvResult.value = j.result;
   if (j.type === 'agg-compare') agResult.value = j.result;
 }
-useJobFromRoute(['query-compare', 'calc-verify', 'agg-compare'], j => { tab.value = { 'query-compare': 0, 'calc-verify': 1, 'agg-compare': 2 }[j.type]; jobId.value = j.id; });
-onMounted(() => { loadSets(); loadTableNames(); });
+useJobFromRoute(['query-compare', 'calc-verify', 'agg-compare', 'readiness', 'unit-tests'], async j => {
+  tab.value = { 'query-compare': 0, 'calc-verify': 1, 'agg-compare': 2, readiness: 3, 'unit-tests': 4 }[j.type];
+  if (tab.value >= 3) { await nextTick(); (tab.value === 3 ? readinessTab : unitTab).value?.show(j); } else jobId.value = j.id;
+});
+onMounted(() => { loadSets(); loadTableNames(); loadProcs(); });
 </script>

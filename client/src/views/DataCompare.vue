@@ -7,6 +7,7 @@
         <div class="arrow">⇄</div>
         <DbPicker v-model="tgt" label="Приёмник" />
       </div>
+      <PeriodFilter v-model="period" />
       <div class="toolbar">
         <DxButton text="Загрузить список таблиц" icon="refresh" styling-mode="outlined" :disabled="!ready" @click="loadTables" />
         <template v-if="tables.length">
@@ -143,6 +144,7 @@ import { DxSelectBox } from 'devextreme-vue/select-box';
 import { DxNumberBox } from 'devextreme-vue/number-box';
 import { DxTagBox } from 'devextreme-vue/tag-box';
 import { DxDataGrid, DxColumn, DxSelection, DxEditing, DxSearchPanel, DxScrolling, DxFilterRow, DxMasterDetail, DxPaging } from 'devextreme-vue/data-grid';
+import PeriodFilter from '../components/PeriodFilter.vue';
 import DbPicker from '../components/DbPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
 import AddToSuite from '../components/AddToSuite.vue';
@@ -153,6 +155,7 @@ import { lastPick, rememberPick, connType } from '../store';
 
 const route = useRoute();
 const lp = lastPick();
+const period = ref(null);
 const src = ref(lp.src || { connId: null, schema: '' });
 const tgt = ref(lp.tgt || { connId: null, schema: '' });
 const tables = ref([]);
@@ -198,7 +201,7 @@ async function run() {
   }));
   const params = {
     sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
-    tables: tableSpecs, ...opts, emptyAsNull: opts.emptyAsNull ?? undefined,
+    tables: tableSpecs, ...opts, emptyAsNull: opts.emptyAsNull ?? undefined, period: period.value || undefined,
   };
   syncJobId.value = null; syncResult.value = null;
   const j = await safe(() => api.post('/jobs/data-compare', params));
@@ -211,7 +214,7 @@ function suiteParams() {
   return {
     sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
     tables: pick.map(t => ({ source: t.source, target: t.target, keyColumns: t.keyColumns ? t.keyColumns.split(',').map(x => x.trim()) : undefined, sourceWhere: t.sourceWhere || undefined, targetWhere: t.targetWhere || undefined })),
-    ...opts, emptyAsNull: opts.emptyAsNull ?? undefined,
+    ...opts, emptyAsNull: opts.emptyAsNull ?? undefined, period: period.value || undefined,
   };
 }
 

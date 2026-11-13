@@ -157,6 +157,18 @@ async function buildSchemaSync(src, tgt, A, B, p, K) {
   const mRoutines = p.compareRoutines === false ? [] : missing(A.routines, B.routines, x => x.key);
   const mTriggers = missing(A.triggers, B.triggers);
 
+  // Представления, у которых в приёмнике не хватает колонок
+  const vb = new Map([...B.views, ...B.mviews].map(v => [K(v.name), v]));
+  for (const va of [...A.views, ...A.mviews]) {
+    const v2 = vb.get(K(va.name));
+    if (!v2 || !va.columns) continue;
+    const have = new Set((v2.columns || []).map(c => K(c.name)));
+    const miss = va.columns.filter(c => !have.has(K(c.name))).map(c => c.name);
+    if (!miss.length) continue;
+    const isM = A.mviews.includes(va);
+    add('Представления', va.name, `-- ${isM ? 'Мат. представление' : 'Представление'} ${v2.name}: в приёмнике нет колонок ${miss.join(', ')}.\n-- Пересоздайте его по определению источника${same ? '' : ' (после конвертации через ora2pg/plsql2pg)'}: ${isM ? 'DROP MATERIALIZED VIEW … ; CREATE MATERIALIZED VIEW …' : 'DROP VIEW … ; CREATE VIEW …'} (CREATE OR REPLACE не может менять состав колонок в середине).`, { comment: true, risk: 'high' });
+  }
+
   if (!same) {
     const list = [...mViews.map(v => `VIEW ${v.name}`), ...mRoutines.map(r => `${r.kind} ${r.name}`), ...mTriggers.map(t => `TRIGGER ${t.name}`)];
     if (list.length) {

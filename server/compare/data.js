@@ -10,6 +10,7 @@ const { loadMeta } = require('../meta');
 const { getConnection, getSettings, publicConnection } = require('../lib/store');
 const { selectExpr, orderExpr, pairMode, makeNormalizer, keyComparator } = require('../lib/normalize');
 const { GROUP } = require('../lib/typemap');
+const { periodWhere, andWhere } = require('../lib/period');
 
 class OrderMismatch extends Error {}
 
@@ -72,8 +73,10 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
   const colsA = all.map(x => x.a), colsB = all.map(x => x.b);
   const keysA = plan.keys.map(x => x.a), keysB = plan.keys.map(x => x.b);
   const nk = plan.keys.length;
-  const whereA = spec.sourceWhere || p.sourceWhere || '';
-  const whereB = spec.targetWhere || p.targetWhere || '';
+  const pa = periodWhere(src, ta, p.period, 'source'), pb = periodWhere(tgt, tb, p.period, 'target');
+  const whereA = andWhere(spec.sourceWhere || p.sourceWhere, pa.where);
+  const whereB = andWhere(spec.targetWhere || p.targetWhere, pb.where);
+  if (pa.applied || pb.applied) res.periodFilter = [...new Set([...pa.parts, ...pb.parts])].join(', ');
 
   const normRow = (row, side) => { const n = all.map((c, i) => (side === 'a' ? c.normA : c.normB)(row[i])); n.raw = row; return n; };
   const w = sink ? sink.begin(ta, tb, all, nk) : null; // генератор скрипта синхронизации данных

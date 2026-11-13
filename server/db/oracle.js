@@ -117,6 +117,20 @@ class OracleDb {
     return { columns, rows, truncated };
   }
 
+  // Строки DBMS_OUTPUT (после DBMS_OUTPUT.ENABLE)
+  async readOutput(max = 100000) {
+    const lines = [];
+    for (let i = 0; i < max; i++) {
+      const r = await this.raw.execute(`BEGIN DBMS_OUTPUT.GET_LINE(:ln, :st); END;`, {
+        ln: { dir: oracledb.BIND_OUT, type: oracledb.STRING, maxSize: 32767 },
+        st: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+      });
+      if (r.outBinds.st !== 0) break;
+      lines.push(r.outBinds.ln || '');
+    }
+    return lines;
+  }
+
   async version() {
     const r = await this.query("SELECT banner FROM v$version WHERE ROWNUM = 1").catch(() => null);
     return r && r[0] ? r[0].banner : `Oracle ${this.raw.oracleServerVersionString}`;

@@ -119,8 +119,24 @@ async function loadPgMeta(db, schema, opts = {}, ctx, extraSchemas = []) {
   const triggers = trg.map(r => ({ name: r.tgname, table: r.table_name, enabled: r.tgenabled !== 'D', func: r.func }));
   for (const tr of triggers) { const t = tables.get(tr.table); if (t) t.triggers.push(tr.name); }
 
-  const views = (await db.query(`SELECT viewname AS name FROM pg_views WHERE schemaname = $1 ORDER BY 1`, [schema]));
-  const mviews = (await db.query(`SELECT matviewname AS name FROM pg_matviews WHERE schemaname = $1 ORDER BY 1`, [schema]));
+  const vcols = await db.query(`
+    SELECT c.relname AS rel, c.relkind, a.attname AS name, format_type(a.atttypid, a.atttypmod) AS full_type,
+           CASE WHEN t.typtype = 'd' THEN bt.typname ELSE t.typname END AS udt
+    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_type t ON t.oid = a.atttypid LEFT JOIN pg_type bt ON bt.oid = t.typbasetype
+    WHERE n.nspname = $1 AND c.relkind IN ('v','m') AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY c.relname, a.attnum`, [schema]);
+  const vmap = new Map();
+  for (const r of vcols) {
+    const tm = parseTypmod(r.full_type);
+    const col = { name: r.name, dataType: r.udt, udt: r.udt, type: r.full_type, length: (r.udt === 'varchar' || r.udt === 'bpchar') && tm ? tm.a : null,
+      precision: r.udt === 'numeric' && tm ? tm.a : null, scale: r.udt === 'numeric' ? (tm ? (tm.b ?? 0) : null) : null };
+    col.family = pgFamily(col);
+    if (!vmap.has(r.rel)) vmap.set(r.rel, []);
+    vmap.get(r.rel).push(col);
+  }
+  const views = (await db.query(`SELECT viewname AS name FROM pg_views WHERE schemaname = $1 ORDER BY 1`, [schema])).map(v => ({ ...v, columns: vmap.get(v.name) || [] }));
+  const mviews = (await db.query(`SELECT matviewname AS name FROM pg_matviews WHERE schemaname = $1 ORDER BY 1`, [schema])).map(v => ({ ...v, columns: vmap.get(v.name) || [] }));
   const sequences = (await db.query(`
     SELECT s.relname AS name,
            (SELECT last_value FROM pg_sequences ps WHERE ps.schemaname = n.nspname AND ps.sequencename = s.relname) AS value,

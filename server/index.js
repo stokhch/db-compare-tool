@@ -10,6 +10,7 @@ const { listObjects } = require('./meta/objects');
 const { renderScript } = require('./compare/syncschema');
 const { SYNC_DIR } = require('./compare/syncdata');
 const { topSql } = require('./verify/queries');
+const { buildTemplate, listProcedures } = require('./verify/calctemplate');
 const { renderReport } = require('./lib/report');
 const { listDumps, DUMPS } = require('./copy/pgdump');
 const { ACTIONS } = require('./copy/ora2pg');
@@ -40,6 +41,8 @@ app.post('/api/connections/test', h(async req => {
 app.get('/api/connections/:id/schemas', h(req => withDb(req.params.id, db => db.schemas())));
 app.get('/api/connections/:id/objects', h(req => withDb(req.params.id, db => listObjects(db, req.query.schema || db.defaultSchema))));
 app.get('/api/connections/:id/topsql', h(req => withDb(req.params.id, db => topSql(db, req.query.schema || db.defaultSchema, req.query.limit))));
+app.get('/api/connections/:id/procedures', h(req => withDb(req.params.id, db => listProcedures(db, req.query.schema || db.defaultSchema))));
+app.post('/api/calc/template', h(req => buildTemplate(req.body)));
 app.get('/api/connections/:id/tables', h(req => withDb(req.params.id, db => listTables(db, req.query.schema || db.defaultSchema))));
 
 // ---------- Настройки и утилиты ----------

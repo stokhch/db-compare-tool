@@ -204,3 +204,75 @@ console.log('OK: окружение Oracle и профиль данных');
   assert(validCron('0 7 * * 1-5') && !validCron('каждый день'));
   console.log('OK: расписание регламента');
 }
+
+// --- зависимости пакетов (на модели справочника: pt вызывает sn, ud, INTER1) ---
+{
+  const { analyzeDeps } = require('../server/migrate/deps');
+  const deps = [
+    { name: 'MAKET_PT_2026', type: 'PACKAGE', rowner: 'TEC22', rname: 'MAKET_SN_PGU_FAKT', rtype: 'PACKAGE' },
+    { name: 'MAKET_PT_2026', type: 'PACKAGE', rowner: 'TEC22', rname: 'MAKET_UD_PGU_FAKT', rtype: 'PACKAGE' },
+    { name: 'MAKET_PT_2026', type: 'PACKAGE', rowner: 'TEC22', rname: 'INTER1', rtype: 'PACKAGE' },
+    { name: 'MAKET_PT_2026', type: 'PACKAGE', rowner: 'TEC22', rname: 'T_PGU_PT_RAB2026', rtype: 'TABLE' },
+    { name: 'MAKET_PT_2026', type: 'PACKAGE', rowner: 'TEC22', rname: 'MV_PGU_TEC22', rtype: 'MATERIALIZED VIEW' },
+    { name: 'MAKET_SN_PGU_FAKT', type: 'PACKAGE', rowner: 'TEC22', rname: 'T_SN_PGU', rtype: 'TABLE' },
+    { name: 'MAKET_PT_2026', type: 'PACKAGE', rowner: 'SYS', rname: 'DBMS_OUTPUT', rtype: 'PACKAGE' },
+  ];
+  const sources = new Map([
+    ['MAKET_PT_2026', 'begin maket_sn_pgu_fakt.ish_dan_sn(d1, d2, e, m); MAKET_UD_PGU_FAKT.ish_dan_ud(d1); y := INTER1.INTER3(a, b); x := inter1.kol_const; end;'],
+    ['MAKET_SN_PGU_FAKT', 'begin null; end;'],
+  ]);
+  const packageProcs = new Map([
+    ['MAKET_PT_2026', ['ISH_DAN_PT_CL', 'RAS_PT', 'ARH_PT']], ['MAKET_SN_PGU_FAKT', ['ISH_DAN_SN']],
+    ['MAKET_UD_PGU_FAKT', ['ISH_DAN_UD']], ['INTER1', ['INTER2', 'INTER3']],
+  ]);
+  const r = analyzeDeps({
+    owner: 'TEC22', deps, sources, packageProcs, scope: new Set(['MAKET_PT_2026']),
+    pgRoutines: new Set(['tec22.maket_pt_2026_ish_dan_pt_cl', 'tec22.maket_pt_2026_ras_pt', 'tec22.maket_pt_2026_arh_pt', 'tec22.inter1_inter3', 'tec22.maket_ud_pgu_fakt_ish_dan_ud']),
+    pgRelations: new Set(['tec22.t_pgu_pt_rab2026']), targetSchema: 'tec22',
+  });
+  const miss = r.rows.filter(x => !x.ok).map(x => x.dependency).sort();
+  assert.deepStrictEqual(miss, ['MAKET_SN_PGU_FAKT.ISH_DAN_SN', 'MV_PGU_TEC22', 'T_SN_PGU'], JSON.stringify(miss));
+  assert(r.scope.includes('MAKET_SN_PGU_FAKT'), 'вызываемые пакеты входят в область');
+  assert(!r.rows.some(x => x.dependency === 'INTER1.KOL_CONST'), 'константы пакета не считаются вызовами');
+  assert(r.order.indexOf('MAKET_SN_PGU_FAKT') < r.order.indexOf('MAKET_PT_2026'), 'порядок поставки: сначала зависимости');
+  assert.deepStrictEqual(r.missingPackages, ['MAKET_SN_PGU_FAKT']);
+  console.log('OK: зависимости пакетов');
+}
+
+// --- шаблон вызова: ish_dan_PT_cl(0, d1, d2, 0, e, m) как в справочнике ---
+{
+  const { buildCalls } = require('../server/verify/calctemplate');
+  const ora = { returns: null, args: [
+    { name: 'P_MODE', type: 'NUMBER', mode: 'IN' }, { name: 'D1', type: 'DATE', mode: 'IN' }, { name: 'D2', type: 'DATE', mode: 'IN' },
+    { name: 'P_PR', type: 'NUMBER', mode: 'IN' }, { name: 'E', type: 'NUMBER', mode: 'IN/OUT' }, { name: 'M', type: 'VARCHAR2', mode: 'OUT' } ] };
+  const pg = { schema: 'tec22', name: 'maket_pt_2026_ish_dan_pt_cl', kind: 'p', modes: ['i', 'i', 'i', 'i', 'b', 'b'], types: ['numeric', 'timestamp without time zone', 'timestamp without time zone', 'numeric', 'numeric', 'text'] };
+  const r = buildCalls({ package: 'MAKET_PT_2026', procedure: 'ISH_DAN_PT_CL' }, ora, pg, 'TEC22', '2026-03-01', '2026-03-31');
+  assert(r.postgres === "CALL tec22.maket_pt_2026_ish_dan_pt_cl(0, DATE '2026-03-01', DATE '2026-03-31', 0, 0, NULL)", r.postgres);
+  assert(r.oracle.includes(`"TEC22"."MAKET_PT_2026"."ISH_DAN_PT_CL"(0, DATE '2026-03-01', DATE '2026-03-31', 0, o5, o6)`), r.oracle);
+  assert(r.oracle.includes('o5 NUMBER := 0;') && r.oracle.includes("DBMS_OUTPUT.PUT_LINE('OUT:' || o5 || '|' || o6)"), r.oracle);
+  const miss = buildCalls({ package: 'MAKET_SN_PGU_FAKT', procedure: 'ISH_DAN_SN' }, ora, { missing: true, expected: 'tec22.maket_sn_pgu_fakt_ish_dan_sn' }, 'TEC22', '2026-03-01', '2026-03-31');
+  assert(miss.postgres.startsWith('-- В PostgreSQL нет tec22.maket_sn_pgu_fakt_ish_dan_sn'));
+  console.log('OK: шаблон вызовов расчёта');
+}
+
+// --- юнит-тесты функций: генерация вызовов и коды ошибок ---
+{
+  const { generateCalls, errorsMatch, judge } = require('../server/verify/unittests');
+  const g = generateCalls([{ name: 'N', type: 'NUMBER', mode: 'IN' }, { name: 'D1', type: 'DATE', mode: 'IN' }, { name: 'D2', type: 'DATE', mode: 'IN' }]);
+  assert.deepStrictEqual(g.calls[0], [1, '2026-03-01 00:00:00', '2026-03-31 00:00:00']);       // базовый: 1 и 31 марта
+  assert(g.calls.every(c => c.filter((v, i) => v !== g.calls[0][i]).length <= 1), 'в каждом вызове меняется не больше одного параметра');
+  assert(g.calls.some(c => c[1] === '2024-02-29 00:00:00'));
+  assert.strictEqual(g.calls.length, 1 + 6 + 4 + 4);
+  assert(generateCalls([{ name: 'T', type: 'PL/SQL TABLE', mode: 'IN' }]).skip);
+  const io = generateCalls([{ name: 'E', type: 'NUMBER', mode: 'IN/OUT' }]);
+  assert.strictEqual(io.calls[0][0], 0, 'IN OUT число начинается с 0');
+  assert.strictEqual(errorsMatch(-1476, '22012'), true);
+  assert.strictEqual(errorsMatch(100, 'P0002'), true);
+  assert.strictEqual(errorsMatch(-20001, '45001'), true);
+  assert.strictEqual(errorsMatch(-1476, 'P0002'), false);
+  assert.strictEqual(judge({ value: '12.50' }, { value: '12.5' }).status, 'pass');
+  assert.strictEqual(judge({ value: '' }, { value: null }).status, 'pass');
+  assert.strictEqual(judge({ value: '2026-03-01 00:00:00' }, { value: '2026-03-01' }).status, 'pass');
+  assert.strictEqual(judge({ err: '-1403' }, { value: '1' }).status, 'fail');
+  console.log('OK: юнит-тесты функций');
+}

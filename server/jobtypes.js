@@ -16,6 +16,9 @@ const { runCodeScan } = require('./migrate/codescan');
 const { runAggCompare } = require('./verify/aggregates');
 const { runQueryCompare } = require('./verify/queries');
 const { runCalcVerify } = require('./verify/calc');
+const { runReadiness } = require('./verify/readiness');
+const { runDepsCheck } = require('./migrate/deps');
+const { runUnitTests } = require('./verify/unittests');
 
 const JOB_TYPES = {
   'schema-compare': { title: p => `Схемы: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runSchemaCompare },
@@ -33,6 +36,9 @@ const JOB_TYPES = {
   codescan: { title: p => `Проверка кода: ${p.path}`, run: runCodeScan },
   'query-compare': { title: p => `Запросы: ${(p.queries || []).length}${p.includeViews ? ' + представления' : ''}`, run: runQueryCompare },
   'calc-verify': { title: p => `Сверка расчётов: ${(p.tables || []).length} таблиц`, run: runCalcVerify },
+  readiness: { title: p => `Готовность данных: ${p.period && p.period.from ? `${p.period.from}…${p.period.to}` : ''}`, run: runReadiness },
+  'deps-check': { title: p => `Зависимости пакетов: ${p.sourceSchema} → ${p.targetSchema}`, run: runDepsCheck },
+  'unit-tests': { title: p => `Юнит-тесты функций${p.suite ? ' (без Oracle)' : ''}`, run: runUnitTests },
   'apply-sql': { title: p => `Выполнение скрипта: ${(p.statements || []).length} операторов`, run: runApplySql },
 };
 

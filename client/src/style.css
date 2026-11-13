@@ -28,3 +28,4 @@ h2.page { margin: 0 0 16px; font-size: 20px; font-weight: 600; }
 .log .error { color: #ff8a80; } .log .warning { color: #ffd180; }
 pre.cmd { background: #f2f4f7; padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .arrow { font-size: 22px; color: #8b98ad; padding: 0 4px 14px; align-self: center; }
+.sub { border: 1px dashed var(--border, #d0d5dd); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; }
