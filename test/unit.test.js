@@ -95,3 +95,16 @@ t('разбор отчёта ora2pg TEST', () => {
   assert.strictEqual(s.length, 2); assert(s[0].ok); assert(!s[1].ok && s[1].messages.length === 1);
 });
 console.log(`OK: ${n} групп тестов пройдено`);
+
+// --- подсказки к ошибкам подключения ---
+const { hintFor } = require('../server/lib/errhint');
+const hintCases = [
+  [{ code: '28P01', message: 'password authentication failed for user "x"' }, /Неверный пароль/],
+  [{ code: '3D000', message: 'database "a" does not exist' }, /Такой базы нет/],
+  [{ message: 'ORA-01017: invalid username/password; logon denied' }, /Неверное имя пользователя или пароль Oracle/],
+  [{ message: 'NJS-518: cannot connect to Oracle Database. Service "XE" is not registered with the listener' }, /Service name/],
+  [{ message: 'NJS-116: password verifier type 0x939 is not supported by node-oracledb in Thin mode' }, /Instant Client/],
+  [{ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:5432' }, /отклонил подключение/],
+];
+for (const [e, re] of hintCases) assert(re.test(hintFor(e) || ''), e.message);
+console.log('OK: подсказки к ошибкам подключения');

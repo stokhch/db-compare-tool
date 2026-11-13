@@ -19,10 +19,12 @@
         <DxCheckBox v-model:value="opts.compareRoutines" text="Функции, процедуры, пакеты, типы" />
         <DxCheckBox v-model:value="opts.checkColumnOrder" text="Учитывать порядок колонок" />
         <DxCheckBox v-model:value="opts.caseSensitive" text="Имена с учётом регистра" />
+        <DxCheckBox v-model:value="opts.checkPgCode" text="Проверить код PostgreSQL (plpgsql_check)" />
       </div>
       <div class="toolbar">
         <DxButton text="Сравнить" icon="runner" type="default" :disabled="!ready" @click="run" />
-        <span class="hint">Oracle ⇄ PostgreSQL: имена сопоставляются без учёта регистра, типы проверяются на совместимость (NUMBER → bigint/numeric, VARCHAR2 → varchar, DATE → timestamp…). Функции пакетов ищутся как <span class="mono">пакет.функция</span> (схема) или <span class="mono">пакет_функция</span> — так их создаёт ora2pg.</span>
+        <span class="hint">Oracle ⇄ PostgreSQL: имена сопоставляются без учёта регистра, типы проверяются на совместимость (NUMBER → bigint/numeric, VARCHAR2 → varchar, DATE → timestamp…). Функции пакетов ищутся как <span class="mono">пакет_функция</span> (так их называет plsql2pg) или <span class="mono">пакет.функция</span> (ora2pg с PACKAGE_AS_SCHEMA).
+          Код PL/pgSQL проверяется расширением plpgsql_check в транзакции с откатом — база не меняется (аналог INVALID-объектов Oracle).</span>
       </div>
     </div>
 
@@ -94,7 +96,7 @@ const route = useRoute(); const router = useRouter();
 const lp = lastPick();
 const src = ref(lp.src || { connId: null, schema: '' });
 const tgt = ref(lp.tgt || { connId: null, schema: '' });
-const opts = reactive({ rowCounts: 'estimate', compareIndexes: true, compareRoutines: true, checkColumnOrder: false, caseSensitive: false });
+const opts = reactive({ rowCounts: 'estimate', compareIndexes: true, compareRoutines: true, checkColumnOrder: false, caseSensitive: false, checkPgCode: true });
 const jobId = ref(null);
 const result = ref(null);
 const category = ref(null);

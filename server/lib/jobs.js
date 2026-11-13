@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { DATA_DIR } = require('./store');
+const { explain } = require('./errhint');
 
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
 const jobs = new Map();
@@ -52,7 +53,7 @@ function createJob(type, title, params, runner) {
       job.progress.message = 'Готово';
     } catch (e) {
       job.status = e.cancelled ? 'cancelled' : 'error';
-      job.error = e.message;
+      job.error = e.cancelled ? e.message : explain(e);
       ctx.log(e.stack || e.message, 'error');
     } finally {
       job.finishedAt = new Date().toISOString();

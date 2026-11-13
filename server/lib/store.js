@@ -83,9 +83,13 @@ function deleteConnection(id) {
 const DEFAULT_SETTINGS = {
   pgBinPath: '',            // папка с pg_dump/pg_restore/psql, напр. C:\Program Files\PostgreSQL\16\bin
   oracleClientLibDir: '',   // Oracle Instant Client для thick-режима (нужен для Oracle 11g и старых паролей)
+  ora2pgSource: 'auto',     // 'auto' — комплект plsql2pg, если найден; 'custom' — своя установка
+  plsql2pgHome: '',         // папка распакованного plsql2pg-windows-x64.zip (в ней perl\ и ora2pg\)
   ora2pgCommand: 'ora2pg',  // команда/путь к ora2pg (на Windows обычно C:\Strawberry\perl\site\bin\ora2pg.bat)
   perlPath: '',             // если ora2pg запускается как perl-скрипт
   maxDiffsPerTable: 200,
+  absTolerance: 0,          // допуск для чисел по умолчанию при сравнении данных
+  relTolerance: 0,
   fetchSize: 2000,
 };
 function getSettings() { return { ...DEFAULT_SETTINGS, ...readJson(FILES.settings, {}) }; }

@@ -5,12 +5,14 @@ const { connect } = require('../db');
 const { loadMeta } = require('../meta');
 const { compatibility } = require('../lib/typemap');
 const { getConnection, publicConnection } = require('../lib/store');
+const { plpgsqlCheck } = require('./pgcheck');
 
 const CAT = {
   tables: 'Таблицы', columns: 'Колонки', pk: 'Первичные ключи', uniques: 'Уникальные ключи',
   fks: 'Внешние ключи', checks: 'CHECK-ограничения', indexes: 'Индексы', triggers: 'Триггеры',
   views: 'Представления', mviews: 'Материализованные представления', sequences: 'Последовательности',
   routines: 'Функции и процедуры', types: 'Типы', rows: 'Количество строк', invalid: 'Невалидные объекты',
+  pgcheck: 'Код PostgreSQL (plpgsql_check)',
 };
 
 function makeKey(caseSensitive) { return n => (n == null ? '' : caseSensitive ? String(n) : String(n).toLowerCase()); }
@@ -35,6 +37,20 @@ async function runSchemaCompare(p, ctx) {
     ctx.progress(0, 0, 'Чтение метаданных приёмника…');
     // Если сравниваем Oracle -> PG, функции пакетов ora2pg кладёт в схемы с именами пакетов
     B = await loadMeta(tgt, p.targetSchema, opts, ctx, A.packages || []);
+    // Проверка кода PL/pgSQL (аналог INVALID в Oracle)
+    if (p.checkPgCode !== false) {
+      for (const [side, db, meta] of [['source', src, A], ['target', tgt, B]]) {
+        if (db.type !== 'postgres') continue;
+        ctx.checkCancel();
+        ctx.progress(0, 0, `plpgsql_check: ${side === 'source' ? 'источник' : 'приёмник'}…`);
+        const schemas = [meta.schema, ...new Set(meta.routines.filter(r => r.package).map(r => r.package))];
+        try {
+          meta.pgcheck = await plpgsqlCheck(db, schemas, { extra: !!p.pgCheckExtra });
+          ctx.log(meta.pgcheck.available ? `plpgsql_check (${side}): проверено ${meta.pgcheck.checked}, сообщений ${meta.pgcheck.messages.length}` : meta.pgcheck.note,
+            meta.pgcheck.available ? 'info' : 'warning');
+        } catch (e) { meta.pgcheck = { available: false, note: `plpgsql_check: ${e.message}`, messages: [] }; }
+      }
+    }
   } finally {
     await Promise.all([src.close(), tgt.close()]);
   }
@@ -161,10 +177,22 @@ async function runSchemaCompare(p, ctx) {
     add(CAT.sequences, a.name, lvl, lvl === 'ok' ? 'equal' : 'different', a.value ?? '—', b.value ?? '—', msg);
   });
   if (p.compareRoutines !== false) {
+    // Подпрограммы пакетов: ora2pg PACKAGE_AS_SCHEMA → «пакет.процедура», plsql2pg (по умолчанию) → «пакет_процедура»
     matchLists(CAT.routines, A.routines, B.routines, x => x.key, (a, b, note) => {
-      add(CAT.routines, a.name, note ? 'warning' : 'ok', 'equal', `${a.kind}${a.valid ? '' : ' (INVALID)'}`, b.kind, note);
+      const msg = note ? `в приёмнике — ${b.name} (именование plsql2pg: пакет_процедура)` : '';
+      add(CAT.routines, a.name, a.valid ? 'ok' : 'warning', 'equal', `${a.kind}${a.valid ? '' : ' (INVALID)'}`, `${b.kind} ${b.name}`, msg);
     }, { altKey: k => (k.includes('.') ? k.replace('.', '_') : null) });
     matchLists(CAT.types, A.types, B.types, x => x.name, null, { missingStatus: 'warning' });
+  }
+  for (const [side, meta] of [['source', A], ['target', B]]) {
+    const pc = meta.pgcheck;
+    if (!pc) continue;
+    if (!pc.available) { add(CAT.pgcheck, side === 'source' ? 'источник' : 'приёмник', 'warning', 'different', '', '', pc.note); continue; }
+    for (const m of pc.messages) {
+      const where = `${m.trigger ? `триггер ${m.trigger}, ` : ''}${m.line ? `строка ${m.line}` : ''}`;
+      add(CAT.pgcheck, m.function, m.level, 'different', side === 'source' ? where || 'ошибка' : '', side === 'target' ? where || 'ошибка' : '', m.message);
+    }
+    if (!pc.messages.length) add(CAT.pgcheck, `${side === 'source' ? 'источник' : 'приёмник'}: проверено ${pc.checked}`, 'ok', 'equal', '', '', 'Ошибок не найдено');
   }
   for (const o of A.invalid) add(CAT.invalid, `${o.type} ${o.name}`, 'warning', 'different', 'INVALID', '', 'Невалидный объект в источнике');
   for (const o of B.invalid) add(CAT.invalid, `${o.type} ${o.name}`, 'warning', 'different', '', 'INVALID', 'Невалидный объект в приёмнике');

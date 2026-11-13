@@ -13,14 +13,15 @@ const { runTransfer } = require('./copy/transfer');
 const { runPgDump, listDumps, DUMPS } = require('./copy/pgdump');
 const { runDataPump } = require('./copy/datapump');
 const { runOra2pg, ACTIONS } = require('./copy/ora2pg');
-const { pgTool, toolVersion, ora2pgCmd, findPgBin } = require('./lib/proc');
+const { pgTool, toolVersion, ora2pgCmd, perlModule, findPgBin } = require('./lib/proc');
+const { explain } = require('./lib/errhint');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
 const h = fn => async (req, res) => {
   try { const r = await fn(req, res); if (r !== undefined && !res.headersSent) res.json(r); }
-  catch (e) { console.error(e); res.status(400).json({ error: e.message }); }
+  catch (e) { console.error(e.message); res.status(400).json({ error: explain(e) }); }
 };
 
 // ---------- Подключения ----------
@@ -44,12 +45,15 @@ app.get('/api/settings', h(() => ({ ...store.getSettings(), detectedPgBin: findP
 app.put('/api/settings', h(req => { const { detectedPgBin, ...s } = req.body; return store.saveSettings(s); }));
 app.get('/api/tools', h(async () => {
   const o = ora2pgCmd();
-  const [pgDump, pgRestore, ora2pg] = await Promise.all([
+  const [pgDump, pgRestore, ora2pg, dbdOracle, dbdPg] = await Promise.all([
     toolVersion(pgTool('pg_dump'), ['--version']),
     toolVersion(pgTool('pg_restore'), ['--version']),
-    toolVersion(o.cmd, [...o.pre, '--version']),
+    toolVersion(o.cmd, [...o.pre, '--version'], o.env),
+    perlModule(o, 'DBD::Oracle'),
+    perlModule(o, 'DBD::Pg'),
   ]);
-  return { pgDump, pgRestore, ora2pg, ora2pgActions: ACTIONS };
+  ora2pg.source = o.source;
+  return { pgDump, pgRestore, ora2pg, dbdOracle, dbdPg, ora2pgActions: ACTIONS };
 }));
 
 // ---------- Задачи ----------

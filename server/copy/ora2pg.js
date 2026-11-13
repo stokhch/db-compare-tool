@@ -91,7 +91,8 @@ async function runOra2pg(p, ctx) {
   const confFile = path.join(outDir, 'ora2pg.conf');
   fs.writeFileSync(confFile, buildConf(s, t, p, outDir), 'utf8');
 
-  const { cmd, pre } = ora2pgCmd();
+  const { cmd, pre, env, source } = ora2pgCmd();
+  ctx.log(`ora2pg: ${source}`);
   const args = [...pre, '-c', confFile, '-t', action, '-b', outDir];
   if (p.parallelTables > 1) args.push('-P', String(p.parallelTables));
   if (p.oracleCopies > 1) args.push('-J', String(p.oracleCopies));
@@ -101,7 +102,7 @@ async function runOra2pg(p, ctx) {
 
   const stdoutName = action === 'SHOW_REPORT' ? 'report.html' : 'stdout.txt';
   ctx.progress(0, 0, `ora2pg ${action}…`);
-  const r = await run(cmd, args, { cwd: outDir, ctx, captureStdout: true, logStdout: action !== 'SHOW_REPORT', stdoutFile: path.join(outDir, stdoutName) });
+  const r = await run(cmd, args, { cwd: outDir, ctx, env, captureStdout: true, logStdout: action !== 'SHOW_REPORT', stdoutFile: path.join(outDir, stdoutName) });
 
   // пароли в conf больше не нужны
   try {

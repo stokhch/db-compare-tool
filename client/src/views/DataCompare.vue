@@ -33,6 +33,8 @@
         </div>
         <div class="field" style="width:150px"><label>Примеров отличий на таблицу</label><DxNumberBox v-model:value="opts.maxDiffs" :min="1" :max="10000" :show-spin-buttons="true" /></div>
         <div class="field" style="width:120px"><label>Параллельно таблиц</label><DxNumberBox v-model:value="opts.parallel" :min="1" :max="8" :show-spin-buttons="true" /></div>
+        <div class="field" style="width:150px"><label>Допуск чисел, абсолютный</label><DxNumberBox v-model:value="opts.absTolerance" :min="0" format="#0.##########" placeholder="0" /></div>
+        <div class="field" style="width:160px"><label>Допуск чисел, относительный</label><DxNumberBox v-model:value="opts.relTolerance" :min="0" format="#0.##########" placeholder="0, напр. 0.000001" /></div>
         <div class="field" style="width:150px"><label>Точность float (цифр)</label><DxNumberBox v-model:value="opts.floatPrecision" :min="6" :max="17" :show-spin-buttons="true" /></div>
         <div class="field col"><label>Исключить колонки (имя или таблица.колонка)</label>
           <DxTagBox v-model:value="opts.excludeColumns" :items="[]" :accept-custom-value="true" placeholder="например: updated_at, emp.photo" @custom-item-creating="e => (e.customItem = e.text)" />
@@ -45,7 +47,7 @@
       </div>
       <div class="toolbar">
         <DxButton text="Сравнить данные" icon="runner" type="default" :disabled="!ready" @click="run" />
-        <span class="hint">Строки сопоставляются по первичному ключу потоковым merge-join (как в pgCompare/reladiff), значения нормализуются: числа, даты (UTC, микросекунды), CHAR, NULL/'' , JSON, бинарные данные. Таблицы без ключа сравниваются как наборы строк.</span>
+        <span class="hint">Строки сопоставляются по первичному ключу потоковым merge-join (как в pgCompare/reladiff), значения нормализуются: числа, даты (UTC, микросекунды), CHAR, NULL/'' , JSON, бинарные данные. Таблицы без ключа сравниваются как наборы строк. Допуск: числа считаются равными, если |a−b| ≤ абсолютного допуска или ≤ относительного × max(|a|,|b|) — полезно для расчётных таблиц (округления Oracle и PostgreSQL).</span>
       </div>
     </div>
 
@@ -57,6 +59,7 @@
         <div class="card"><div class="v ok">{{ result.summary.equal || 0 }}</div><div class="l">совпадают</div></div>
         <div class="card"><div class="v error">{{ result.summary.different || 0 }}</div><div class="l">отличаются</div></div>
         <div class="card"><div class="v error">{{ result.summary.error || 0 }}</div><div class="l">ошибок</div></div>
+        <div v-if="result.summary.withinTolerance" class="card"><div class="v warning">{{ fmtNum(result.summary.withinTolerance) }}</div><div class="l">строк в пределах допуска</div></div>
         <div class="card"><div class="v">{{ fmtNum(result.summary.missing) }} / {{ fmtNum(result.summary.extra) }} / {{ fmtNum(result.summary.differentRows) }}</div><div class="l">строк: нет в приёмнике / лишние / разные</div></div>
       </div>
       <div class="panel" style="padding:8px">
@@ -70,6 +73,7 @@
           <DxColumn data-field="missing" caption="Нет в приёмнике" data-type="number" css-class="error" />
           <DxColumn data-field="extra" caption="Лишние" data-type="number" css-class="error" />
           <DxColumn data-field="different" caption="Различаются" data-type="number" css-class="error" />
+          <DxColumn data-field="withinTolerance" caption="В допуске" data-type="number" :visible="!!result.summary.withinTolerance" />
           <DxColumn caption="Колонки с отличиями" :calculate-cell-value="r => Object.entries(r.diffColumns || {}).map(([k, v]) => `${k}: ${v}`).join(', ')" />
           <DxColumn data-field="mode" caption="Режим" :width="90" />
           <DxColumn data-field="ms" caption="Время" :calculate-display-value="r => fmtMs(r.ms)" :width="80" />
@@ -105,7 +109,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { DxButton } from 'devextreme-vue/button';
 import { DxCheckBox } from 'devextreme-vue/check-box';
@@ -124,7 +128,7 @@ const src = ref(lp.src || { connId: null, schema: '' });
 const tgt = ref(lp.tgt || { connId: null, schema: '' });
 const tables = ref([]);
 const selected = ref([]);
-const opts = reactive({ emptyAsNull: null, maxDiffs: 200, parallel: 2, floatPrecision: 15, excludeColumns: [], trimTrailingSpaces: false, compareLobs: true, forceMapMode: false });
+const opts = reactive({ absTolerance: 0, relTolerance: 0, emptyAsNull: null, maxDiffs: 200, parallel: 2, floatPrecision: 15, excludeColumns: [], trimTrailingSpaces: false, compareLobs: true, forceMapMode: false });
 const jobId = ref(null);
 const result = ref(null);
 const DT = { missing_in_target: 'Нет в приёмнике', extra_in_target: 'Лишняя в приёмнике', different: 'Отличается' };
@@ -166,6 +170,11 @@ async function run() {
 }
 function onUpdate(j) { if (j.result && j.status === 'running') result.value = j.result.tables ? { summary: j.result.summary, tables: j.result.tables } : null; }
 function onDone(j) { if (j.result) result.value = j.result; }
+
+onMounted(async () => {
+  const st = await safe(() => api.get('/settings'));
+  if (st) { opts.absTolerance = st.absTolerance || 0; opts.relTolerance = st.relTolerance || 0; }
+});
 
 watch(() => route.query.job, async id => {
   if (!id) return;

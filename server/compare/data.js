@@ -64,7 +64,7 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
     table: ta.name, targetTable: tb.name, status: 'equal', mode: '', sourceRows: 0, targetRows: 0,
     missing: 0, extra: 0, different: 0, columns: plan.keys.length + plan.values.length,
     keyColumns: plan.keys.map(k => k.name), onlySourceColumns: plan.onlySource, onlyTargetColumns: plan.onlyTarget,
-    diffColumns: {}, diffs: [], ms: 0, error: null, note: '',
+    diffColumns: {}, diffs: [], ms: 0, error: null, note: '', withinTolerance: 0,
   };
   const all = [...plan.keys, ...plan.values];
   if (!all.length) { res.status = 'skipped'; res.note = 'Нет общих колонок'; return res; }
@@ -79,10 +79,23 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
   const keyObj = nr => Object.fromEntries(plan.keys.map((k, i) => [k.name, nr[i]]));
   const rowObj = nr => Object.fromEntries(all.map((c, i) => [c.name, short(nr[i])]));
   const pushDiff = (d) => { if (res.diffs.length < maxDiffs) res.diffs.push(d); };
+  // Допуск для чисел (как в plsql2pg verify): |a-b| <= abs  или  |a-b| <= rel * max(|a|,|b|)
+  const absTol = Number(p.absTolerance) || 0, relTol = Number(p.relTolerance) || 0;
+  const useTol = absTol > 0 || relTol > 0;
+  const withinTol = (c, x, y) => {
+    if (!useTol || x === null || y === null || (c.mode !== 'number' && c.mode !== 'float')) return false;
+    const a = Number(x), b = Number(y);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+    const d = Math.abs(a - b);
+    return d <= absTol || d <= relTol * Math.max(Math.abs(a), Math.abs(b));
+  };
+  let tolHit = false;
   const compareValues = (na, nb) => {
     const cols = [];
+    tolHit = false;
     for (let i = nk; i < all.length; i++) {
       if (na[i] !== nb[i]) {
+        if (withinTol(all[i], na[i], nb[i])) { tolHit = true; continue; }
         cols.push({ name: all[i].name, source: short(na[i]), target: short(nb[i]) });
         res.diffColumns[all[i].name] = (res.diffColumns[all[i].name] || 0) + 1;
       }
@@ -97,7 +110,7 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
   // ---------- multiset: без ключа ----------
   if (!nk) {
     res.mode = 'multiset';
-    res.note = 'Нет первичного/уникального ключа — сравниваются наборы строк целиком';
+    res.note = 'Нет первичного/уникального ключа — сравниваются наборы строк целиком' + (useTol ? ' (допуск для чисел в этом режиме не применяется)' : '');
     const h = nr => crypto.createHash('md5').update(JSON.stringify(nr)).digest('base64');
     const bag = new Map();
     for await (const batch of tgt.stream(buildSelect(tgt, p.targetSchema, tb.name, colsB, [], whereB, false), [], fetchSize)) {
@@ -189,6 +202,7 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
       if (c === 0) {
         const cols = compareValues(a.value, b.value);
         if (cols.length) { res.different++; pushDiff({ type: 'different', key: keyObj(a.value), columns: cols }); }
+        else if (tolHit) res.withinTolerance++;
         prevA = a.value; prevB = b.value;
         res.sourceRows++; res.targetRows++;
         a = await itA.next(); b = await itB.next();
@@ -212,8 +226,9 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
       for (const r of batch) { const nr = normRow(r, 'b'); target.set(keyStr(nr), valHash(nr)); res.targetRows++; }
       tick();
     }
-    const needDetail = new Map(); // key -> source normalized row (для расшифровки отличий)
-    for await (const batch of src.stream(buildSelect(src, p.sourceSchema, ta.name, colsA, [], whereA, false), src.type === 'oracle' ? {} : [], fetchSize)) {
+    // Строки с отличающимся хешем — «подозреваемые»; окончательно (с учётом допуска) решаем во втором проходе
+    const suspects = new Map(); // key -> нормализованная строка источника
+    for await (const batch of src.stream(buildSelect(src, p.sourceSchema, ta.name, colsA, [], whereA, false), [], fetchSize)) {
       for (const r of batch) {
         res.sourceRows++;
         const nr = normRow(r, 'a');
@@ -221,22 +236,24 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
         const hb = target.get(k);
         if (hb === undefined) { res.missing++; pushDiff({ type: 'missing_in_target', key: keyObj(nr), row: rowObj(nr) }); continue; }
         target.delete(k);
-        if (hb !== valHash(nr)) {
-          res.different++;
-          if (needDetail.size < maxDiffs) needDetail.set(k, nr);
-        }
+        if (hb !== valHash(nr)) suspects.set(k, nr);
       }
       tick();
     }
     res.extra = target.size;
     const extraKeys = new Set([...target.keys()].slice(0, maxDiffs));
-    if (needDetail.size || extraKeys.size) {
+    target.clear();
+    if (suspects.size || extraKeys.size) {
       for await (const batch of tgt.stream(buildSelect(tgt, p.targetSchema, tb.name, colsB, [], whereB, false), [], fetchSize)) {
         for (const r of batch) {
           const nb = normRow(r, 'b');
           const k = keyStr(nb);
-          if (needDetail.has(k)) pushDiff({ type: 'different', key: keyObj(nb), columns: compareValues(needDetail.get(k), nb) });
-          else if (extraKeys.has(k)) pushDiff({ type: 'extra_in_target', key: keyObj(nb), row: rowObj(nb) });
+          const na = suspects.get(k);
+          if (na) {
+            const cols = compareValues(na, nb);
+            if (cols.length) { res.different++; pushDiff({ type: 'different', key: keyObj(nb), columns: cols }); }
+            else if (tolHit) res.withinTolerance++;
+          } else if (extraKeys.has(k)) pushDiff({ type: 'extra_in_target', key: keyObj(nb), row: rowObj(nb) });
         }
         tick();
       }
@@ -326,13 +343,13 @@ async function runDataCompare(p, ctx) {
     summary: summarize(results),
     source: { ...publicConnection(srcConn), schema: p.sourceSchema },
     target: { ...publicConnection(tgtConn), schema: p.targetSchema },
-    options: { emptyAsNull: opts.emptyAsNull, trimTrailingSpaces: !!opts.trimTrailingSpaces, compareLobs: opts.compareLobs !== false, maxDiffs },
+    options: { absTolerance: Number(p.absTolerance) || 0, relTolerance: Number(p.relTolerance) || 0, emptyAsNull: opts.emptyAsNull, trimTrailingSpaces: !!opts.trimTrailingSpaces, compareLobs: opts.compareLobs !== false, maxDiffs },
     tables: results,
   };
 }
 
 function summarize(results) {
-  const s = { tables: results.length, equal: 0, different: 0, error: 0, skipped: 0, sourceRows: 0, targetRows: 0, missing: 0, extra: 0, differentRows: 0 };
+  const s = { withinTolerance: results.reduce((a, r) => a + (r.withinTolerance || 0), 0), tables: results.length, equal: 0, different: 0, error: 0, skipped: 0, sourceRows: 0, targetRows: 0, missing: 0, extra: 0, differentRows: 0 };
   for (const r of results) {
     s[r.status] = (s[r.status] || 0) + 1;
     s.sourceRows += r.sourceRows || 0; s.targetRows += r.targetRows || 0;

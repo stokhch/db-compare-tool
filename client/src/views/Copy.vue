@@ -127,10 +127,12 @@
 
     <!-- ===== ora2pg ===== -->
     <div v-show="tab === 3" class="panel">
-      <p class="hint" style="margin-top:0">Запуск <b>ora2pg</b> с конфигурацией, собранной из сохранённых подключений. Нужен установленный ora2pg (Strawberry Perl + DBD::Oracle + DBD::Pg) — путь задаётся в Настройках.
+      <p class="hint" style="margin-top:0">Запуск <b>ora2pg</b> с конфигурацией, собранной из сохранённых подключений. Подойдёт ora2pg из комплекта plsql2pg (папка задаётся в Настройках) или своя установка (Strawberry Perl + DBD::Oracle + DBD::Pg).
         Подходит для конвертации кода (PL/SQL → PL/pgSQL), отчёта о сложности миграции, переноса данных и проверок TEST/TEST_DATA.
         <span v-if="tools && !tools.ora2pg.ok" class="error"> Сейчас ora2pg не найден: {{ tools.ora2pg.version }}</span>
-        <span v-else-if="tools" class="ok"> Найден: {{ tools.ora2pg.version }}</span></p>
+        <span v-else-if="tools" class="ok"> Найден: {{ tools.ora2pg.version }} ({{ tools.ora2pg.source }}).</span>
+        <span v-if="tools && tools.ora2pg.ok && !tools.dbdOracle.ok" class="warning"> У Perl нет драйвера DBD::Oracle — действия с подключением к Oracle (SHOW_REPORT, TABLE, COPY, TEST…) не выполнятся.
+          Установите DBD::Oracle (нужен Oracle Instant Client) или используйте вкладку «Перелив таблиц» и сравнение.</span></p>
       <div class="row">
         <DbPicker v-model="op.src" label="Oracle" only="oracle" />
         <div class="arrow">→</div>

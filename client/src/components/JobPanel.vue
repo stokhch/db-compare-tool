@@ -13,7 +13,7 @@
     </div>
     <DxProgressBar v-if="job.status === 'running'" :min="0" :max="pTotal || 100" :value="pTotal ? job.progress.current : undefined"
       :show-status="!!pTotal" :status-format="r => `${Math.round(r * 100)}%`" />
-    <div v-if="job.error" class="error" style="margin:8px 0">{{ job.error }}</div>
+    <div v-if="job.error" class="error" style="margin:8px 0;white-space:pre-wrap">{{ job.error }}</div>
     <div v-if="showLog" ref="logEl" class="log"><div v-for="(l, i) in job.log" :key="i" :class="l.level">{{ l.t.slice(11, 19) }} {{ l.msg }}</div></div>
   </div>
 </template>

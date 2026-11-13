@@ -40,6 +40,7 @@ class PostgresDb {
       ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
       types: customTypes,
       application_name: 'db-compare-tool',
+      connectionTimeoutMillis: 20000,
     });
     await raw.connect();
     await raw.query("SET TimeZone = 'UTC'");

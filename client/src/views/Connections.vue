@@ -61,7 +61,7 @@
           <div class="field" style="flex:1"><label>Схема по умолчанию</label><DxTextBox v-model:value="form.schema" :placeholder="form.type === 'oracle' ? 'как пользователь' : 'public'" /></div>
           <div v-if="form.type === 'postgres'" class="field" style="flex:1;padding-top:22px"><DxCheckBox v-model:value="form.ssl" text="SSL" /></div>
         </div>
-        <div v-if="testResult" :class="testResult.ok ? 'ok' : 'error'" style="margin:6px 0 10px;word-break:break-word">{{ testResult.text }}</div>
+        <div v-if="testResult" :class="testResult.ok ? 'ok' : 'error'" style="margin:6px 0 10px;word-break:break-word;white-space:pre-wrap">{{ testResult.text }}</div>
         <div class="toolbar" style="justify-content:flex-end;margin:8px 0 0">
           <DxButton text="Проверить" icon="video" styling-mode="outlined" :disabled="testing" @click="testForm" />
           <DxButton text="Сохранить" type="default" icon="save" @click="save" />

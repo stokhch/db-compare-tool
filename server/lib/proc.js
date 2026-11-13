@@ -75,18 +75,52 @@ function pgTool(name) {
   return bin ? path.join(bin, exe) : exe;
 }
 
-function ora2pgCmd() {
+// Комплект plsql2pg для Windows: perl/ + ora2pg/ рядом с plsql2pg.exe (как в plsql2pg/ora2pg.py)
+function plsql2pgBundle() {
   const s = getSettings();
-  const cmd = s.ora2pgCommand || 'ora2pg';
-  if (s.perlPath) return { cmd: s.perlPath, pre: [cmd] };
-  return { cmd, pre: [] };
+  const roots = [s.plsql2pgHome, process.env.PLSQL2PG_HOME, IS_WIN ? 'C:\\plsql2pg' : ''].filter(Boolean);
+  for (const root of roots) {
+    const script = path.join(root, 'ora2pg', 'scripts', 'ora2pg');
+    if (!fs.existsSync(script)) continue;
+    const perlDir = path.join(root, 'perl');
+    const perl = path.join(perlDir, 'perl', 'bin', IS_WIN ? 'perl.exe' : 'perl');
+    const extra = [path.join(perlDir, 'perl', 'bin'), path.join(perlDir, 'perl', 'site', 'bin'), path.join(perlDir, 'c', 'bin')];
+    return {
+      root,
+      cmd: fs.existsSync(perl) ? perl : 'perl',
+      pre: ['-I', path.join(root, 'ora2pg', 'lib'), script],
+      env: { PATH: extra.join(path.delimiter) + path.delimiter + (process.env.PATH || process.env.Path || ''), PERL5LIB: '' },
+    };
+  }
+  return null;
 }
 
-async function toolVersion(cmd, args) {
+/** Как запускать ora2pg: { cmd, pre, env, source } */
+function ora2pgCmd() {
+  const s = getSettings();
+  if (s.ora2pgSource !== 'custom') {
+    const b = plsql2pgBundle();
+    if (b) return { cmd: b.cmd, pre: b.pre, env: b.env, source: `комплект plsql2pg (${b.root})` };
+  }
+  const cmd = s.ora2pgCommand || 'ora2pg';
+  if (s.perlPath) return { cmd: s.perlPath, pre: [cmd], env: {}, source: 'свой ora2pg' };
+  return { cmd, pre: [], env: {}, source: 'свой ora2pg' };
+}
+
+/** Есть ли у Perl драйвер DBD::Oracle (без него ora2pg не подключится к Oracle) */
+async function perlModule(o, mod) {
+  const perl = o.pre.length && o.pre[0] === '-I' ? o.cmd : (getSettings().perlPath || 'perl');
   try {
-    const r = await run(cmd, args, { captureStdout: true, logStdout: false });
+    const r = await run(perl, ['-M' + mod, '-e', `print $${mod}::VERSION`], { captureStdout: true, logStdout: false, env: o.env });
+    return { ok: r.code === 0, version: r.code === 0 ? `${mod} ${r.stdout.trim()}` : `${mod} не установлен` };
+  } catch (e) { return { ok: false, version: e.message }; }
+}
+
+async function toolVersion(cmd, args, env) {
+  try {
+    const r = await run(cmd, args, { captureStdout: true, logStdout: false, env });
     return { ok: r.code === 0, version: r.stdout.trim().split(/\r?\n/)[0] || `код ${r.code}` };
   } catch (e) { return { ok: false, version: e.message }; }
 }
 
-module.exports = { run, pgTool, findPgBin, ora2pgCmd, toolVersion, IS_WIN };
+module.exports = { run, pgTool, findPgBin, ora2pgCmd, plsql2pgBundle, perlModule, toolVersion, IS_WIN };

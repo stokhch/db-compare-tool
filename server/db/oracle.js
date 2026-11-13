@@ -48,7 +48,7 @@ class OracleDb {
     let privilege;
     const m = /^(.*?)\s+as\s+(sysdba|sysoper)$/i.exec(user || '');
     if (m) { user = m[1]; privilege = m[2].toLowerCase() === 'sysdba' ? oracledb.SYSDBA : oracledb.SYSOPER; }
-    const raw = await oracledb.getConnection({ user, password: conn.password, connectString: buildConnectString(conn), privilege });
+    const raw = await oracledb.getConnection({ user, password: conn.password, connectString: buildConnectString(conn), privilege, connectTimeout: 20 });
     const db = new OracleDb(conn, raw);
     // Единые настройки сессии: бинарная сортировка (совпадает с COLLATE "C" в PG), точка как разделитель, UTC.
     for (const s of [
