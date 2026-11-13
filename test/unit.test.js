@@ -336,3 +336,94 @@ END`);
   assert(!f2.some(x => ['nvl', 'dual', 'oratypes'].includes(x.rule)));
   console.log('OK: проверка перевода кода');
 }
+
+// --- импорт дампа Oracle: заголовок, состав, проблемы, план, журнал ---
+{
+  const { parseHeader, siblingFiles } = require('../server/dump/header');
+  const { parseDdl } = require('../server/dump/sqlfile');
+  const { analyzeIssues, buildPlan, unresolved, dpBlock } = require('../server/dump/plan');
+  const { classifyLog, importedRows } = require('../server/dump/errors');
+  // exp: байты 1–2 — NLS_CHARSET_ID (171 = CL8MSWIN1251)
+  const exp = Buffer.concat([Buffer.from([0x03, 0x00, 0xab]), Buffer.from('EXPORT:V11.02.00\nDSCOTT\nRUSERS\n2048\n0\n', 'latin1')]);
+  const he = parseHeader(exp);
+  assert.strictEqual(he.format, 'exp'); assert.strictEqual(he.charset, 'CL8MSWIN1251'); assert.strictEqual(he.exportedBy, 'SCOTT'); assert.strictEqual(he.mode, 'SCHEMA');
+  const dp = Buffer.from('\x00\x01garbage"SYSTEM"."SYS_EXPORT_SCHEMA_01"\x00x86_64/Linux 2.4.xx\x00AL32UTF8\x0019.00.00.00.00\x00', 'latin1');
+  const hd = parseHeader(dp);
+  assert.strictEqual(hd.format, 'datapump'); assert.strictEqual(hd.mode, 'SCHEMA'); assert.strictEqual(hd.dbVersion, '19.00.00.00.00'); assert.strictEqual(hd.charset, 'AL32UTF8');
+  assert.strictEqual(parseHeader(Buffer.from([0x1f, 0x8b, 8, 0])).format, 'gzip');
+  assert.deepStrictEqual(siblingFiles('/d/exp_01.dmp', ['exp_02.dmp', 'exp_01.dmp', 'other.dmp', 'exp_1.dmp']), ['exp_01.dmp', 'exp_02.dmp']);
+
+  const c = parseDdl(require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'sqlfile.sql'), 'utf8'));
+  const scott = c.schemas.find(s => s.name === 'SCOTT');
+  assert(scott && scott.createUser && scott.objects.TABLE === 2 && scott.objects['PACKAGE BODY'] === 1, JSON.stringify(scott));
+  assert.deepStrictEqual(c.tablespacesUsed.map(t => t.name).sort(), ['APP_DATA', 'APP_IDX', 'APP_LOB', 'TEMP2']);
+  assert(c.tablespacesUsed.find(t => t.name === 'TEMP2').temp);
+  assert.deepStrictEqual(c.rolesUsed, ['APP_READER']);
+  assert(c.grantees.includes('REPORTS'));
+  assert.deepStrictEqual(c.externalRefs.map(r => r.schema), ['HR']);
+  assert.strictEqual(c.byteColumns.length, 2);
+  assert.strictEqual(c.dbLinks.length, 1);
+  // старый exp: строки DDL с CONNECT
+  const legacy = parseDdl('CONNECT SCOTT;\nCREATE TABLE "EMP" ("EMPNO" NUMBER(4, 0), "ENAME" VARCHAR2(10))  PCTFREE 10 TABLESPACE "USERS" LOGGING;\nGRANT SELECT ON "EMP" TO "R1";\nCREATE PACKAGE BODY pkg AS;', { legacy: true });
+  assert.strictEqual(legacy.schemas[0].name, 'SCOTT'); assert.strictEqual(legacy.schemas[0].objects.TABLE, 1);
+  assert.strictEqual(legacy.byteColumns[0].column, 'ENAME');
+
+  const target = {
+    user: 'SYSTEM', version: '21.0.0.0.0', charset: 'AL32UTF8', conName: 'XEPDB1', privs: { dba: true }, defaultPermanent: 'USERS', defaultTemp: 'TEMP',
+    users: { SCOTT: { exists: true, total: 12, objects: { TABLE: 4 }, sessions: 1 } }, allUsers: ['SCOTT', 'SYSTEM'],
+    tablespaces: [{ name: 'USERS', contents: 'PERMANENT', maxMb: 30000 }, { name: 'TEMP', contents: 'TEMPORARY' }], roles: [], datafileDir: 'C:\\APP\\ORADATA\\XE\\XEPDB1', sep: '\\', staleJobs: [{ owner: 'SYSTEM', job: 'SYS_IMPORT_FULL_01' }],
+  };
+  const a = { format: 'datapump', header: { charset: 'CL8MSWIN1251', dbVersion: '19.00.00.00.00', parts: ['x.dmp'] }, dumpInfo: { charset: 'CL8MSWIN1251' }, contents: c, target, totalSize: 1048576 * 10, directory: { name: 'DBCMP_DUMP_DIR', visible: true } };
+  const an = analyzeIssues(a);
+  const ids = an.issues.map(i => i.id);
+  for (const id of ['charset', 'schema:SCOTT', 'ts:APP_DATA', 'ts:TEMP2', 'roles', 'external', 'dblinks', 'stale']) assert(ids.includes(id), `нет проблемы ${id}: ${ids}`);
+  assert.strictEqual(an.defaults.tablespaces.TEMP2.to, 'TEMP', 'временное → TEMP');
+  assert.strictEqual(an.defaults.tablespaces.APP_DATA.to, 'USERS');
+  assert(an.defaults.byteToChar);
+  assert(unresolved(an, an.defaults).some(x => /SCOTT/.test(x)), 'непустая схема требует решения');
+  // решение: удалить схему
+  const d = JSON.parse(JSON.stringify(an.defaults)); d.schemas.SCOTT = { action: 'drop', target: 'SCOTT' };
+  const plan = buildPlan(a, an, d);
+  assert.deepStrictEqual(plan.blocking, []);
+  const sqls = plan.pre.map(s => s.sql).join('\n');
+  assert(/KILL SESSION/.test(sqls) && /DROP USER "SCOTT" CASCADE/.test(sqls) && /CREATE ROLE "APP_READER"/.test(sqls) && /DROP TABLE "SYSTEM"\."SYS_IMPORT_FULL_01" PURGE/.test(sqls), sqls);
+  assert(!/CREATE USER/.test(sqls), 'пользователя создаст Data Pump из дампа');
+  assert.strictEqual(plan.jobs.length, 3, 'два этапа + перевод колонок');
+  assert(plan.jobs[0].metadataOnly && plan.jobs[0].exclude.includes('INDEX'));
+  assert(/MODIFY \("DNAME" VARCHAR2\(14 CHAR\)\)/.test(plan.jobs[1].between.map(x => x.sql).join()));
+  assert.strictEqual(plan.jobs[2].tableExistsAction, 'APPEND');
+  assert.deepStrictEqual(plan.jobs[2].remapTablespace.find(x => x[0] === 'APP_DATA'), ['APP_DATA', 'USERS']);
+  const blk = dpBlock({ operation: 'IMPORT', jobName: 'J', dir: 'D', files: ['x.dmp'], logFile: 'l.log', workDir: 'DATA_PUMP_DIR', job: plan.jobs[2] });
+  assert(/REMAP_TABLESPACE', 'APP_DATA', 'USERS'/.test(blk) && /'TABLE_EXISTS_ACTION', 'APPEND'/.test(blk) && /'l.log', 'DATA_PUMP_DIR'/.test(blk));
+  // решение: под другим именем; в дампе нет CREATE USER → пользователь создаётся с квотами
+  const c2 = { ...c, schemas: c.schemas.map(s => ({ ...s, createUser: false })) };
+  const a2 = { ...a, contents: c2, format: 'exp' };
+  const an2 = analyzeIssues(a2);
+  const d2 = JSON.parse(JSON.stringify(an2.defaults)); d2.schemas.SCOTT = { action: 'remap', target: 'SCOTT_COPY' };
+  const p2 = buildPlan(a2, an2, d2);
+  const s2 = p2.pre.map(s => s.sql).join('\n');
+  assert(/CREATE USER "SCOTT_COPY"/.test(s2) && /QUOTA UNLIMITED ON "APP_DATA"/.test(s2) && /CREATE TABLESPACE "APP_DATA" DATAFILE 'C:\\APP\\ORADATA\\XE\\XEPDB1\\app_data01.dbf'/.test(s2), s2);
+  assert.deepStrictEqual(p2.imp, { fromuser: ['SCOTT'], touser: ['SCOTT_COPY'], ignore: true });
+  // CDB$ROOT и отсутствие прав — блокирующие
+  const an3 = analyzeIssues({ ...a, target: { ...target, conName: 'CDB$ROOT', privs: {} } });
+  assert(an3.issues.find(i => i.id === 'cdb').blocking && an3.issues.find(i => i.id === 'privileges').blocking);
+
+  const log = [
+    'Processing object type SCHEMA_EXPORT/TABLE/TABLE',
+    'ORA-39083: Object type TABLE:"SCOTT"."EMP" failed to create with error:',
+    'ORA-00959: tablespace \'APP_DATA\' does not exist',
+    'Failing sql is:',
+    'CREATE TABLE "SCOTT"."EMP" (...)',
+    'ORA-31684: Object type USER:"SCOTT" already exists',
+    'ORA-02374: conversion error loading table "SCOTT"."DEPT"',
+    'ORA-12899: value too large for column DNAME (actual: 16, maximum: 14)',
+    '. . imported "SCOTT"."DEPT"                              5.929 KB       4 rows',
+  ];
+  const g = classifyLog(log);
+  assert.strictEqual(g[0].benign, undefined);
+  assert(g.find(x => x.code === 'ORA-00959').objects.includes('SCOTT.EMP'));
+  assert(g.find(x => x.code === 'ORA-12899').fix === 'byteToChar');
+  assert(g[g.length - 1].benign, 'безвредные — в конце');
+  assert.deepStrictEqual(importedRows(log), [{ owner: 'SCOTT', table: 'DEPT', partition: null, size: '5.929 KB', rows: 4 }]);
+  console.log('OK: импорт дампа Oracle');
+}

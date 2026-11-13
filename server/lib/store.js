@@ -87,6 +87,7 @@ const DEFAULT_SETTINGS = {
   plsql2pgHome: '',         // папка распакованного plsql2pg-windows-x64.zip (в ней perl\ и ora2pg\)
   ora2pgCommand: 'ora2pg',  // команда/путь к ora2pg (на Windows обычно C:\Strawberry\perl\site\bin\ora2pg.bat)
   perlPath: '',             // если ora2pg запускается как perl-скрипт
+  oracleBinPath: '',        // папка bin полной установки Oracle (imp, impdp), напр. C:\app\oracle\product\21c\dbhomeXE\bin
   maxDiffsPerTable: 200,
   absTolerance: 0,          // допуск для чисел по умолчанию при сравнении данных
   relTolerance: 0,

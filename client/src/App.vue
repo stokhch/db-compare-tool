@@ -9,6 +9,7 @@
       <router-link to="/checks">✅ Проверки</router-link>
       <router-link to="/migrate">🚚 Миграция</router-link>
       <router-link to="/copy">📦 Копирование</router-link>
+      <router-link to="/dump">🗄️ Импорт дампа</router-link>
       <router-link to="/code">🧑‍💻 Код приложения</router-link>
       <router-link to="/suites">⏰ Регламент</router-link>
       <router-link to="/jobs">🕘 Задачи <span v-if="runningJobs" class="badge">{{ runningJobs }}</span></router-link>

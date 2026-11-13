@@ -25,6 +25,9 @@
       <div class="field"><label>Oracle Instant Client (Thick-режим; нужен для Oracle 11g и старых паролей). После изменения перезапустите приложение.</label>
         <DxTextBox v-model:value="s.oracleClientLibDir" placeholder="C:\oracle\instantclient_23_5 (пусто — Thin-режим без клиента)" />
       </div>
+      <div class="field"><label>Папка bin полной установки Oracle — для импорта старых дампов exp утилитой imp (пусто — ищется в ORACLE_HOME и PATH)</label>
+        <DxTextBox v-model:value="s.oracleBinPath" placeholder="C:\app\oracle\product\21c\dbhomeXE\bin" />
+      </div>
       <h3 style="margin-top:16px">Сравнение</h3>
       <div class="row">
         <div class="field" style="width:220px"><label>Строк за одну выборку (fetch size)</label><DxNumberBox v-model:value="s.fetchSize" :min="100" :max="50000" :step="500" :show-spin-buttons="true" /></div>

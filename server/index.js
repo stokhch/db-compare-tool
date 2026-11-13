@@ -124,6 +124,31 @@ app.get('/api/files/sync/:jobId/:name', (req, res) => {
   if (!fs.existsSync(f)) return res.status(404).send('Нет файла');
   res.download(f);
 });
+app.post('/api/dump/plan', h(req => require('./dump/import').previewPlan(req.body)));
+// Просмотр папок этого компьютера для выбора файла дампа (приложение работает локально)
+app.get('/api/fs/list', h(req => {
+  const os = require('os');
+  let dir = String(req.query.path || '').trim();
+  if (!dir) {
+    if (process.platform === 'win32') {
+      const drives = [];
+      for (const l of 'CDEFGHIJKLMNOPQRSTUVWXYZ') if (fs.existsSync(`${l}:\\`)) drives.push({ name: `${l}:\\`, path: `${l}:\\`, dir: true });
+      return { path: '', parent: null, entries: [{ name: 'Домашняя папка', path: os.homedir(), dir: true }, ...drives] };
+    }
+    dir = os.homedir();
+  }
+  const entries = fs.readdirSync(dir, { withFileTypes: true })
+    .filter(e => !e.name.startsWith('.'))
+    .map(e => {
+      const full = path.join(dir, e.name);
+      let size = null; try { if (e.isFile()) size = fs.statSync(full).size; } catch { /* нет доступа */ }
+      return { name: e.name, path: full, dir: e.isDirectory(), size };
+    })
+    .filter(e => e.dir || /\.(dmp|exp|expdp|dump|gz)$/i.test(e.name) || req.query.all)
+    .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+  const parent = path.dirname(dir) !== dir ? path.dirname(dir) : (process.platform === 'win32' ? '' : null);
+  return { path: dir, parent, entries };
+}));
 app.get('/api/dumps', h(() => listDumps()));
 app.get('/api/dumps/:name', (req, res) => {
   const f = path.join(DUMPS, path.basename(req.params.name));

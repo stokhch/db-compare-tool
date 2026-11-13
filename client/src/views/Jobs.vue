@@ -39,8 +39,8 @@ import { api, safe, STATUS, fmtMs, fmtNum } from '../api';
 const router = useRouter();
 const jobs = ref([]);
 const openId = ref(null);
-const TYPES = { 'schema-compare': 'Схемы', 'data-compare': 'Данные', transfer: 'Перелив', pgdump: 'pg_dump', datapump: 'Data Pump', ora2pg: 'ora2pg', 'data-sync': 'Синхр. данных', 'apply-sql': 'Скрипт', profile: 'Профиль', pipeline: 'Миграция', delta: 'Догрузка', extras: 'Окружение', codescan: 'Код', 'query-compare': 'Запросы', 'calc-verify': 'Расчёты', 'agg-compare': 'Агрегаты', suite: 'Регламент', readiness: 'Готовность', 'unit-tests': 'Юнит-тесты', 'deps-check': 'Зависимости' };
-const ROUTES = { 'schema-compare': '/schema', 'data-compare': '/data', profile: '/profile', pipeline: '/migrate', delta: '/migrate', extras: '/migrate', codescan: '/code', 'query-compare': '/checks', 'calc-verify': '/checks', 'agg-compare': '/checks', readiness: '/checks', 'unit-tests': '/checks', 'deps-check': '/migrate' };
+const TYPES = { 'schema-compare': 'Схемы', 'data-compare': 'Данные', transfer: 'Перелив', pgdump: 'pg_dump', datapump: 'Data Pump', ora2pg: 'ora2pg', 'data-sync': 'Синхр. данных', 'apply-sql': 'Скрипт', profile: 'Профиль', pipeline: 'Миграция', delta: 'Догрузка', extras: 'Окружение', codescan: 'Код', 'query-compare': 'Запросы', 'calc-verify': 'Расчёты', 'agg-compare': 'Агрегаты', suite: 'Регламент', readiness: 'Готовность', 'unit-tests': 'Юнит-тесты', 'deps-check': 'Зависимости', 'dump-analyze': 'Анализ дампа', 'dump-import': 'Импорт дампа' };
+const ROUTES = { 'schema-compare': '/schema', 'data-compare': '/data', profile: '/profile', pipeline: '/migrate', delta: '/migrate', extras: '/migrate', codescan: '/code', 'query-compare': '/checks', 'calc-verify': '/checks', 'agg-compare': '/checks', readiness: '/checks', 'unit-tests': '/checks', 'deps-check': '/migrate', 'dump-analyze': '/dump', 'dump-import': '/dump' };
 const isCompare = j => !!ROUTES[j.type];
 const cls = { done: 'ok', error: 'error', cancelled: 'warning', running: 'warning' };
 
@@ -66,6 +66,8 @@ function summaryText(r) {
     case 'readiness': return `таблиц ${s.tables}: есть ${s.ok}, пусто ${s.warning}, проблем ${s.error}`;
     case 'unit-tests': return `функций ${s.functions}: полностью ${s.fullyPassed}, не прошло вызовов ${s.failed}, не найдено ${s.notFound}${s.withoutOracle ? ' (без Oracle)' : ''}`;
     case 'deps-check': return `зависимостей ${s.dependencies}: нет в PG ${s.missing}, пакетов поставить ${s.missingPackages}`;
+    case 'dump-analyze': return `${s.format}, ${s.sizeMb} МБ${s.schemas != null ? `, схем ${s.schemas}` : ''}: ошибок ${s.errors}, предупреждений ${s.warnings}`;
+    case 'dump-import': return `${{ OK: 'успешно', WARNINGS: 'с ошибками', FAILED: 'не завершён' }[s.state]}: строк ${fmtNum(s.rows)}, ошибок ${s.errors}, невалидных ${s.invalid}`;
     case 'extras': return Object.entries(s).map(([k, v]) => `${k}: ${v}`).join(', ');
     default: return '';
   }

@@ -19,6 +19,7 @@ const { runCalcVerify } = require('./verify/calc');
 const { runReadiness } = require('./verify/readiness');
 const { runDepsCheck } = require('./migrate/deps');
 const { runUnitTests } = require('./verify/unittests');
+const { runDumpAnalyze, runDumpImport } = require('./dump/import');
 
 const JOB_TYPES = {
   'schema-compare': { title: p => `Схемы: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runSchemaCompare },
@@ -39,6 +40,8 @@ const JOB_TYPES = {
   readiness: { title: p => `Готовность данных: ${p.period && p.period.from ? `${p.period.from}…${p.period.to}` : ''}`, run: runReadiness },
   'deps-check': { title: p => `Зависимости пакетов: ${p.sourceSchema} → ${p.targetSchema}`, run: runDepsCheck },
   'unit-tests': { title: p => `Юнит-тесты функций${p.suite ? ' (без Oracle)' : ''}`, run: runUnitTests },
+  'dump-analyze': { title: p => `Анализ дампа: ${require('path').basename(String(p.file || ''))}`, run: runDumpAnalyze },
+  'dump-import': { title: p => `Импорт дампа${p.title ? ': ' + p.title : ''}`, run: runDumpImport },
   'apply-sql': { title: p => `Выполнение скрипта: ${(p.statements || []).length} операторов`, run: runApplySql },
 };
 

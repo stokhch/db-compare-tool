@@ -24,6 +24,7 @@ const router = createRouter({
     { path: '/migrate', component: () => import('./views/Migration.vue'), meta: { title: 'Миграция' } },
     { path: '/code', component: () => import('./views/CodeScan.vue'), meta: { title: 'Код приложения' } },
     { path: '/suites', component: () => import('./views/Suites.vue'), meta: { title: 'Регламент' } },
+    { path: '/dump', component: () => import('./views/DumpImport.vue'), meta: { title: 'Импорт дампа' } },
     { path: '/copy', component: () => import('./views/Copy.vue'), meta: { title: 'Копирование' } },
     { path: '/jobs', component: () => import('./views/Jobs.vue'), meta: { title: 'Задачи' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: 'Настройки' } },
