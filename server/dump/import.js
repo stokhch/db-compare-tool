@@ -506,4 +506,4 @@ async function postCheck(db, a, plan, d) {
   return { invalid, counts };
 }
 
-module.exports = { runDumpAnalyze, runDumpImport, previewPlan, targetState, findImp };
+module.exports = { runDumpAnalyze, runDumpImport, previewPlan, targetState, findImp, runDp };

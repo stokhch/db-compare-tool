@@ -1,11 +1,11 @@
 'use strict';
 // Копирование Oracle → Oracle через Data Pump по сети (NETWORK_LINK):
 // импорт запускается на приёмнике через PL/SQL API DBMS_DATAPUMP и тянет данные из источника по DB link.
+// Параметры исправлений из проверки: remapTablespaces, excludeDbLinks, excludeJobs, byteToChar (два этапа).
 // Файлы дампа и утилиты expdp/impdp на этой машине не нужны.
 const crypto = require('crypto');
 const { connect } = require('../db');
 const { getConnection } = require('../lib/store');
-const { oracledb } = require('../db/oracle');
 
 function descriptor(c) {
   if (c.connectString) return c.connectString;
@@ -13,89 +13,6 @@ function descriptor(c) {
   return `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${c.host})(PORT=${c.port}))(CONNECT_DATA=${cd}))`;
 }
 const ident = s => (/^[A-Za-z][\w$#]*$/.test(s) ? s : `"${s}"`);
-
-const PLSQL = `
-DECLARE
-  h          NUMBER;
-  job_state  VARCHAR2(30) := 'UNDEFINED';
-  sts        ku$_Status;
-  le         ku$_LogEntry;
-  ind        NUMBER;
-BEGIN
-  h := DBMS_DATAPUMP.OPEN(operation => 'IMPORT', job_mode => :jmode, remote_link => :link, job_name => :jname);
-  DBMS_DATAPUMP.METADATA_FILTER(h, 'SCHEMA_EXPR', 'IN (''' || :src || ''')');
-  IF :tabexpr IS NOT NULL THEN
-    DBMS_DATAPUMP.METADATA_FILTER(h, 'NAME_EXPR', :tabexpr, 'TABLE');
-  END IF;
-  IF :tgt IS NOT NULL AND :tgt <> :src THEN
-    DBMS_DATAPUMP.METADATA_REMAP(h, 'REMAP_SCHEMA', :src, :tgt);
-  END IF;
-  DBMS_DATAPUMP.SET_PARAMETER(h, 'TABLE_EXISTS_ACTION', :tea);
-  IF :metaonly = 1 THEN
-    DBMS_DATAPUMP.DATA_FILTER(h, 'INCLUDE_ROWS', 0);
-  END IF;
-  IF :par > 1 THEN
-    DBMS_DATAPUMP.SET_PARALLEL(h, :par);
-  END IF;
-  DBMS_DATAPUMP.START_JOB(h);
-
-  WHILE job_state NOT IN ('COMPLETED', 'STOPPED') LOOP
-    DBMS_DATAPUMP.GET_STATUS(h,
-      DBMS_DATAPUMP.KU$_STATUS_JOB_ERROR + DBMS_DATAPUMP.KU$_STATUS_JOB_STATUS + DBMS_DATAPUMP.KU$_STATUS_WIP,
-      -1, job_state, sts);
-    IF BITAND(sts.mask, DBMS_DATAPUMP.KU$_STATUS_WIP) != 0 THEN
-      le := sts.wip;
-    ELSIF BITAND(sts.mask, DBMS_DATAPUMP.KU$_STATUS_JOB_ERROR) != 0 THEN
-      le := sts.error;
-    ELSE
-      le := NULL;
-    END IF;
-    IF le IS NOT NULL THEN
-      ind := le.FIRST;
-      WHILE ind IS NOT NULL LOOP
-        DBMS_OUTPUT.PUT_LINE(le(ind).LogText);
-        ind := le.NEXT(ind);
-      END LOOP;
-    END IF;
-  END LOOP;
-  DBMS_DATAPUMP.DETACH(h);
-  :final := job_state;
-EXCEPTION
-  WHEN OTHERS THEN
-    DECLARE
-      msg VARCHAR2(4000) := SQLERRM;
-    BEGIN
-      IF h IS NOT NULL THEN
-        BEGIN
-          DBMS_DATAPUMP.GET_STATUS(h, DBMS_DATAPUMP.KU$_STATUS_JOB_ERROR, 0, job_state, sts);
-          IF BITAND(sts.mask, DBMS_DATAPUMP.KU$_STATUS_JOB_ERROR) != 0 THEN
-            le := sts.error;
-            ind := le.FIRST;
-            WHILE ind IS NOT NULL LOOP
-              DBMS_OUTPUT.PUT_LINE(le(ind).LogText);
-              ind := le.NEXT(ind);
-            END LOOP;
-          END IF;
-          DBMS_DATAPUMP.DETACH(h);
-        EXCEPTION WHEN OTHERS THEN NULL;
-        END;
-      END IF;
-      RAISE_APPLICATION_ERROR(-20001, msg);
-    END;
-END;`;
-
-async function readDbmsOutput(db) {
-  const lines = [];
-  for (let i = 0; i < 100000; i++) {
-    const r = await db.raw.execute(`BEGIN DBMS_OUTPUT.GET_LINE(:ln, :st); END;`, {
-      ln: { dir: oracledb.BIND_OUT, type: oracledb.STRING, maxSize: 32767 },
-      st: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
-    });
-    if (r.outBinds.st !== 0) break;
-    lines.push(r.outBinds.ln || '');
-  }
-  return lines;
-}
 
 function commands(s, t, p, link) {
   const src = p.sourceSchema.toUpperCase(), tgt = (p.targetSchema || p.sourceSchema).toUpperCase();
@@ -117,17 +34,22 @@ async function runDataPump(p, ctx) {
   const link = (p.dbLinkName || 'DBCMP_LINK').toUpperCase();
   const cmds = commands(s, t, p, link);
   if (p.commandsOnly) return { summary: { commandsOnly: true }, commands: cmds };
+  const { dpBlock } = require('../dump/plan');
+  const { runDp } = require('../dump/import');
+  const { classifyLog } = require('../dump/errors');
 
   const db = await connect(t);
   const mon = await connect(t);
   let linkCreated = false;
-  const jobName = 'DBCMP_' + crypto.randomBytes(4).toString('hex').toUpperCase();
+  const src = p.sourceSchema.toUpperCase(), tgt = (p.targetSchema || p.sourceSchema).toUpperCase();
+  const all = [];
   try {
     // 1. DB link на приёмнике → источник
     if (p.createDbLink !== false) {
       if (/"/.test(s.password)) throw new Error('Пароль источника содержит двойную кавычку — DB link создайте вручную');
       await db.exec(`DROP DATABASE LINK ${ident(link)}`).catch(() => {});
-      await db.exec(`CREATE DATABASE LINK ${ident(link)} CONNECT TO ${ident(s.user)} IDENTIFIED BY "${s.password}" USING '${descriptor(s).replace(/'/g, "''")}'`);
+      const srcUser = String(s.user).replace(/\s+as\s+sysdba$/i, '');
+      await db.exec(`CREATE DATABASE LINK ${ident(link)} CONNECT TO ${ident(srcUser)} IDENTIFIED BY "${s.password}" USING '${descriptor(s).replace(/'/g, "''")}'`);
       linkCreated = true;
       ctx.log(`Создан DB link ${link} → ${s.host}:${s.port}/${s.database}`);
     }
@@ -135,56 +57,46 @@ async function runDataPump(p, ctx) {
     if (!chk.length) throw new Error(`DB link ${link} не работает`);
     ctx.log(`DB link ${link} проверен`);
 
-    // 2. Запуск импорта
-    await db.raw.execute(`BEGIN DBMS_OUTPUT.ENABLE(NULL); END;`);
-    const tabexpr = (p.tables || []).length ? `IN (${p.tables.map(x => `'${String(x).replace(/'/g, "''")}'`).join(',')})` : null;
-    const binds = {
-      jmode: (p.tables || []).length ? 'TABLE' : 'SCHEMA',
-      link, jname: jobName,
-      src: p.sourceSchema.toUpperCase(),
-      tgt: (p.targetSchema || p.sourceSchema).toUpperCase(),
-      tabexpr,
-      tea: p.tableExistsAction || 'SKIP',
-      metaonly: p.content === 'METADATA_ONLY' ? 1 : 0,
-      par: Number(p.parallel) || 1,
-      final: { dir: oracledb.BIND_OUT, type: oracledb.STRING, maxSize: 30 },
+    const tables = p.tables || [];
+    const excl = [];
+    if (p.excludeDbLinks) excl.push('DB_LINK');
+    if (p.excludeJobs) excl.push('JOB', 'PROCOBJ');
+    const base = {
+      jobMode: tables.length ? 'TABLE' : 'SCHEMA', remoteLink: link,
+      schemaExpr: `IN ('${src.replace(/'/g, "''")}')`,
+      tablesExpr: tables.length ? `IN (${tables.map(x => `'${String(x).replace(/'/g, "''")}'`).join(',')})` : null,
+      remapSchema: src !== tgt ? [[src, tgt]] : [], remapTablespace: p.remapTablespaces || [],
+      tableExistsAction: p.tableExistsAction || 'SKIP', exclude: excl, oid: src !== tgt, parallel: Number(p.parallel) || 1,
+      metadataOnly: p.content === 'METADATA_ONLY',
     };
-    ctx.log(`Запуск Data Pump: задание ${jobName}, ${binds.src} → ${binds.tgt}, TABLE_EXISTS_ACTION=${binds.tea}`);
-    ctx.progress(0, 100, 'Data Pump выполняется…');
-
-    let finished = false;
-    const poll = (async () => {
-      while (!finished) {
-        await new Promise(r => setTimeout(r, 3000));
-        if (finished) break;
-        if (ctx.cancelled) {
-          ctx.log('Остановка задания Data Pump…', 'warning');
-          await mon.raw.execute(`DECLARE h NUMBER; BEGIN h := DBMS_DATAPUMP.ATTACH(:j, USER); DBMS_DATAPUMP.STOP_JOB(h, 1, 0); END;`, { j: jobName }).catch(e => ctx.log(e.message, 'error'));
-          break;
-        }
-        try {
-          const st = await mon.query(`SELECT state FROM user_datapump_jobs WHERE job_name = :j`, { j: jobName });
-          const pct = await mon.query(`SELECT ROUND(sofar / NULLIF(totalwork, 0) * 100) AS pct FROM v$session_longops WHERE opname = :j AND sofar <> totalwork`, { j: jobName }).catch(() => []);
-          const percent = pct[0] && pct[0].pct != null ? Number(pct[0].pct) : null;
-          ctx.progress(percent ?? 0, 100, `Data Pump: ${st[0] ? st[0].state : '…'}${percent != null ? ` ${percent}%` : ''}`);
-        } catch { /* нет прав на представление — просто ждём */ }
+    const runJob = async (job, title) => {
+      const jobName = 'DBCMP_' + crypto.randomBytes(4).toString('hex').toUpperCase();
+      ctx.log(`${title}: задание ${jobName}, ${src} → ${tgt}, TABLE_EXISTS_ACTION=${job.tableExistsAction}`);
+      const r = await runDp(db, mon, dpBlock({ operation: 'IMPORT', jobName, job }), jobName, ctx, title);
+      all.push(...r.lines);
+      if (r.error && !/ORA-39(082|083|151)/.test(r.error)) throw new Error(r.error);
+      return r;
+    };
+    let final;
+    if (p.byteToChar && p.content !== 'METADATA_ONLY') {
+      // 1) структура таблиц без индексов и ограничений, 2) колонки BYTE → CHAR, 3) данные и остальное
+      await runJob({ ...base, metadataOnly: true, exclude: [...excl, 'INDEX', 'CONSTRAINT', 'REF_CONSTRAINT', 'TRIGGER', 'STATISTICS'] }, 'Этап 1: структура');
+      const cols = await db.query(`SELECT table_name AS t, column_name AS c, data_type AS ty, char_length AS l FROM all_tab_columns WHERE owner = :o AND data_type IN ('VARCHAR2','CHAR') AND char_used = 'B'`, { o: tgt });
+      for (const c of cols) {
+        await db.exec(`ALTER TABLE ${ident(tgt)}.${ident(c.t)} MODIFY (${ident(c.c)} ${c.ty}(${Math.min(Number(c.l), c.ty === 'CHAR' ? 2000 : 4000)} CHAR))`)
+          .catch(e => ctx.log(`${c.t}.${c.c}: ${e.message.split('\n')[0]}`, 'warning'));
       }
-    })();
+      ctx.log(`Колонок переведено в CHAR: ${cols.length}`);
+      final = (await runJob({ ...base, tableExistsAction: 'APPEND' }, 'Этап 2: данные')).state;
+    } else final = (await runJob(base, 'Импорт')).state;
 
-    let final, err;
-    try {
-      const r = await db.raw.execute(PLSQL, binds);
-      final = r.outBinds.final;
-    } catch (e) { err = e; }
-    finished = true;
-    await poll;
-    const out = await readDbmsOutput(db).catch(() => []);
-    for (const l of out) ctx.log(l, /ORA-\d+/.test(l) ? 'error' : 'info');
-    if (err) throw err;
     if (ctx.cancelled) throw Object.assign(new Error('Задача отменена пользователем'), { cancelled: true });
-    const errors = out.filter(l => /ORA-\d+/.test(l)).length;
-    ctx.log(`Data Pump завершён: ${final}, сообщений об ошибках: ${errors}`);
-    return { summary: { state: final, errors, job: jobName }, commands: cmds, log: out };
+    await db.exec(`BEGIN DBMS_UTILITY.COMPILE_SCHEMA('${tgt.replace(/'/g, "''")}', FALSE); END;`).catch(() => {});
+    const inv = await db.query(`SELECT object_type AS type, object_name AS name FROM all_objects WHERE owner = :o AND status = 'INVALID'`, { o: tgt }).catch(() => []);
+    const errors = classifyLog(all);
+    const real = errors.filter(e => !e.benign);
+    ctx.log(`Data Pump завершён: ${final}, ошибок ${real.reduce((x, e) => x + e.count, 0)}, невалидных объектов ${inv.length}`);
+    return { summary: { state: final, errors: real.reduce((x, e) => x + e.count, 0), invalid: inv.length }, commands: cmds, errors, invalid: inv, log: all.slice(-3000) };
   } finally {
     if (linkCreated && p.dropDbLinkAfter !== false) {
       await db.raw.commit().catch(() => {});

@@ -61,6 +61,7 @@ async function runPipeline(p, ctx) {
       ctx.log(`Продолжение запуска ${p.resumeJobId.slice(0, 8)}: уже загружено таблиц — ${skipTables.length}`);
     }
   }
+  if (p.skipTables && p.skipTables.length) { skipTables = [...new Set([...skipTables, ...p.skipTables])]; ctx.log(`Пропускаются таблицы: ${p.skipTables.join(', ')}`); }
   const order = ['structure', 'data', 'keys', 'sequences', 'analyze', 'verify'].filter(s => want[s]);
   ctx.progress(0, order.length, 'Старт');
   const result = { steps, source: { ...publicConnection(srcConn), schema: p.sourceSchema }, target: { ...publicConnection(tgtConn), schema: p.targetSchema } };

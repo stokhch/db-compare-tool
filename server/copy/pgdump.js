@@ -40,6 +40,7 @@ async function runPgDump(p, ctx) {
     for (const t of p.tables || []) args.push('-t', t);
     if (p.content === 'schema') args.push('--schema-only');
     if (p.content === 'data') args.push('--data-only');
+    if (p.noTablespaces) args.push('--no-tablespaces');
     if (p.noOwner !== false) args.push('--no-owner');
     if (p.noPrivileges !== false) args.push('--no-privileges');
     ctx.progress(0, 2, 'pg_dump…');
@@ -55,17 +56,32 @@ async function runPgDump(p, ctx) {
     if (!file || !fs.existsSync(file)) throw new Error('Файл дампа не найден');
     const t = getConnection(p.targetId);
     if (t.type !== 'postgres') throw new Error('pg_restore работает только с PostgreSQL');
-    if (p.createDatabase) {
-      const exists = await withDb({ ...t, database: 'postgres' }, db => db.query('SELECT 1 FROM pg_database WHERE datname = $1', [t.database]));
+    const admin = { ...t, database: p.maintenanceDb || 'postgres' };
+    if (p.terminateConnections || p.recreateDatabase) {
+      const r = await withDb(admin, db => db.query(`SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, [t.database]));
+      if (r.length) ctx.log(`Завершено подключений к ${t.database}: ${r.length}`);
+    }
+    if (p.recreateDatabase) {
+      await withDb(admin, db => db.exec(`DROP DATABASE IF EXISTS ${db.quote(t.database)}`));
+      ctx.log(`База ${t.database} удалена`, 'warning');
+    }
+    if (p.createDatabase || p.recreateDatabase) {
+      const exists = await withDb(admin, db => db.query('SELECT 1 FROM pg_database WHERE datname = $1', [t.database]));
       if (!exists.length) {
-        await withDb({ ...t, database: 'postgres' }, db => db.exec(`CREATE DATABASE ${db.quote(t.database)}`));
-        ctx.log(`Создана база ${t.database}`);
+        const like = p.createLike || {};
+        const opts = like.encoding ? ` TEMPLATE template0 ENCODING '${like.encoding}'${like.collate ? ` LC_COLLATE '${like.collate}' LC_CTYPE '${like.ctype || like.collate}'` : ''}` : '';
+        await withDb(admin, db => db.exec(`CREATE DATABASE ${db.quote(t.database)}${opts}`));
+        ctx.log(`Создана база ${t.database}${opts}`);
       }
+    }
+    for (const ext of p.createExtensions || []) {
+      await withDb(t, db => db.exec(`CREATE EXTENSION IF NOT EXISTS ${db.quote(ext)}`)).then(() => ctx.log(`Расширение ${ext} установлено`)).catch(e => ctx.log(`Расширение ${ext}: ${e.message}`, 'warning'));
     }
     const args = ['-v', ...connArgs(t), '-d', t.database];
     if (p.noOwner !== false) args.push('--no-owner');
     if (p.noPrivileges !== false) args.push('--no-privileges');
     if (p.clean) args.push('--clean', '--if-exists');
+    if (p.noTablespaces) args.push('--no-tablespaces');
     if (p.jobs && Number(p.jobs) > 1) args.push('-j', String(p.jobs));
     if (p.singleTransaction && !(p.jobs > 1)) args.push('--single-transaction', '--exit-on-error');
     args.push(file);

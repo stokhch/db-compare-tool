@@ -275,13 +275,14 @@ function buildPlan(a, an, d) {
 /** PL/SQL для одного задания Data Pump (IMPORT или SQL_FILE) с выводом журнала через DBMS_OUTPUT. */
 function dpBlock({ operation = 'IMPORT', jobName, dir, files, logFile, sqlFile, workDir, job = {} }) {
   const L = [];
-  L.push(`h := DBMS_DATAPUMP.OPEN(operation => '${operation}', job_mode => 'FULL', job_name => ${lit(jobName)});`);
-  for (const f of files) L.push(`DBMS_DATAPUMP.ADD_FILE(h, ${lit(f)}, ${lit(dir)});`);
+  L.push(`h := DBMS_DATAPUMP.OPEN(operation => '${operation}', job_mode => '${job.jobMode || 'FULL'}', remote_link => ${job.remoteLink ? lit(job.remoteLink) : 'NULL'}, job_name => ${lit(jobName)});`);
+  for (const f of files || []) L.push(`DBMS_DATAPUMP.ADD_FILE(h, ${lit(f)}, ${lit(dir)});`);
   // журнал и SQL-файл пишутся в рабочий каталог (DATA_PUMP_DIR): папка с дампом может быть доступна только на чтение
   if (logFile) L.push(`DBMS_DATAPUMP.ADD_FILE(h, ${lit(logFile)}, ${lit(workDir || dir)}, NULL, DBMS_DATAPUMP.KU$_FILE_TYPE_LOG_FILE);`);
   if (sqlFile) L.push(`DBMS_DATAPUMP.ADD_FILE(h, ${lit(sqlFile)}, ${lit(workDir || dir)}, NULL, DBMS_DATAPUMP.KU$_FILE_TYPE_SQL_FILE);`);
   if (job.password) L.push(`DBMS_DATAPUMP.SET_PARAMETER(h, 'ENCRYPTION_PASSWORD', ${lit(job.password)});`);
   if (job.schemaExpr) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'SCHEMA_EXPR', ${lit(job.schemaExpr)});`);
+  if (job.tablesExpr) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'NAME_EXPR', ${lit(job.tablesExpr)}, 'TABLE');`);
   if (job.exclude && job.exclude.length) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'EXCLUDE_PATH_EXPR', ${lit(`IN (${job.exclude.map(lit).join(',')})`)});`);
   for (const [a, b] of job.remapSchema || []) L.push(`DBMS_DATAPUMP.METADATA_REMAP(h, 'REMAP_SCHEMA', ${lit(a)}, ${lit(b)});`);
   for (const [a, b] of job.remapTablespace || []) L.push(`DBMS_DATAPUMP.METADATA_REMAP(h, 'REMAP_TABLESPACE', ${lit(a)}, ${lit(b)});`);

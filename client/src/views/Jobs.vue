@@ -40,7 +40,7 @@ const router = useRouter();
 const jobs = ref([]);
 const openId = ref(null);
 const TYPES = { 'schema-compare': 'Схемы', 'data-compare': 'Данные', transfer: 'Перелив', pgdump: 'pg_dump', datapump: 'Data Pump', ora2pg: 'ora2pg', 'data-sync': 'Синхр. данных', 'apply-sql': 'Скрипт', profile: 'Профиль', pipeline: 'Миграция', delta: 'Догрузка', extras: 'Окружение', codescan: 'Код', 'query-compare': 'Запросы', 'calc-verify': 'Расчёты', 'agg-compare': 'Агрегаты', suite: 'Регламент', readiness: 'Готовность', 'unit-tests': 'Юнит-тесты', 'deps-check': 'Зависимости', 'dump-analyze': 'Анализ дампа', 'dump-import': 'Импорт дампа' };
-const ROUTES = { 'schema-compare': '/schema', 'data-compare': '/data', profile: '/profile', pipeline: '/migrate', delta: '/migrate', extras: '/migrate', codescan: '/code', 'query-compare': '/checks', 'calc-verify': '/checks', 'agg-compare': '/checks', readiness: '/checks', 'unit-tests': '/checks', 'deps-check': '/migrate', 'dump-analyze': '/dump', 'dump-import': '/dump' };
+const ROUTES = { 'schema-compare': '/schema', 'data-compare': '/data', profile: '/profile', pipeline: '/migrate', delta: '/migrate', extras: '/migrate', codescan: '/code', 'query-compare': '/checks', 'calc-verify': '/checks', 'agg-compare': '/checks', readiness: '/checks', 'unit-tests': '/checks', 'deps-check': '/migrate', 'dump-analyze': '/dump', 'dump-import': '/dump', transfer: '/copy', pgdump: '/copy', datapump: '/copy', ora2pg: '/copy' };
 const isCompare = j => !!ROUTES[j.type];
 const cls = { done: 'ok', error: 'error', cancelled: 'warning', running: 'warning' };
 

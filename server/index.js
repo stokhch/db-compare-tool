@@ -124,6 +124,18 @@ app.get('/api/files/sync/:jobId/:name', (req, res) => {
   if (!fs.existsSync(f)) return res.status(404).send('Нет файла');
   res.download(f);
 });
+// ---------- Проверка перед запуском и разбор ошибок ----------
+const preflight = require('./preflight');
+const { diagnoseJob, retryParams } = require('./lib/diagnose');
+app.post('/api/preflight/:type', h(req => preflight.runPreflight(req.params.type, req.body.params || req.body)));
+app.post('/api/preflight-apply', h(req => preflight.applyPreflight(req.body)));
+app.get('/api/jobs/:id/diagnose', h(req => { const j = jobs.getJob(req.params.id, true); if (!j) throw new Error('Задача не найдена'); return diagnoseJob(j); }));
+app.post('/api/jobs/:id/retry', h(req => {
+  const j = jobs.getJob(req.params.id, true);
+  if (!j) throw new Error('Задача не найдена');
+  const r = retryParams(j, req.body.fixes);
+  return { type: j.type, ...r, preflight: !!preflight.PREFLIGHT[j.type] };
+}));
 app.post('/api/dump/plan', h(req => require('./dump/import').previewPlan(req.body)));
 // Просмотр папок этого компьютера для выбора файла дампа (приложение работает локально)
 app.get('/api/fs/list', h(req => {

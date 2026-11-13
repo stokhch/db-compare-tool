@@ -427,3 +427,37 @@ END`);
   assert.deepStrictEqual(importedRows(log), [{ owner: 'SCOTT', table: 'DEPT', partition: null, size: '5.929 KB', rows: 4 }]);
   console.log('OK: импорт дампа Oracle');
 }
+
+// --- проверка перед запуском и разбор ошибок ---
+{
+  const { deepMerge, applySelection, unresolvedOf } = require('../server/preflight/common');
+  const { diagnoseJob, retryParams } = require('../server/lib/diagnose');
+  assert.deepStrictEqual(deepMerge({ a: 1, l: [1], o: { x: 1 } }, { a: 2, l: [2], o: { y: 2 } }), { a: 2, l: [1, 2], o: { x: 1, y: 2 } });
+  const issues = [
+    { id: 'nonempty', required: true, choice: true, title: 'не пусто', fixes: [{ id: 'truncate', danger: true, patch: { mode: 'truncate' } }, { id: 'skip', patch: { skipTables: ['a'] } }] },
+    { id: 'widen', fixes: [{ id: 'w', default: true, patch: { preSql: [{ sql: 'ALTER 1' }] } }] },
+    { id: 'schema', blocking: true, title: 'нет схемы', fixes: [{ id: 'c', default: true, input: { label: 'Пароль', value: 'x' }, patch: { preSql: [{ sql: 'CREATE USER u IDENTIFIED BY "{{value}}"' }] } }] },
+    { id: 'remap', choice: true, fixes: [{ id: 'r', default: true, input: { path: 'targetSchema', value: 'new_s', upper: true }, patch: {} }] },
+  ];
+  assert.deepStrictEqual(unresolvedOf(issues, {}), ['не пусто']);
+  const r = applySelection({ mode: 'append', preSql: [{ sql: 'X' }] }, issues, { nonempty: 'skip' }, { 'schema/c': 'S3cret' });
+  assert.deepStrictEqual(r.params.skipTables, ['a']);
+  assert.strictEqual(r.params.mode, 'append');
+  assert.deepStrictEqual(r.params.preSql.map(x => x.sql), ['X', 'ALTER 1', 'CREATE USER u IDENTIFIED BY "S3cret"']);
+  assert.strictEqual(r.params.targetSchema, 'NEW_S');
+  assert.deepStrictEqual(unresolvedOf(issues, { nonempty: 'truncate' }), []);
+  assert.deepStrictEqual(unresolvedOf(issues, { schema: [] }).length, 2, 'блокирующая без выбранного исправления');
+
+  const job = { id: 'j1', type: 'transfer', status: 'done', params: { mode: 'append', preSql: [{ sql: 'x' }], encryptionPassword: '***' },
+    log: [{ level: 'error', msg: 'dept: ошибка — duplicate key value violates unique constraint "dept_pkey"' }, { level: 'error', msg: 'emp: ошибка — value too long for type character varying(10)' }, { level: 'warning', msg: 'что-то нераспознанное' }],
+    result: { tables: [{ table: 'dept', status: 'error', error: 'duplicate key value violates unique constraint "dept_pkey"' }, { table: 'big', status: 'done' }] } };
+  const d = diagnoseJob(job);
+  assert.deepStrictEqual(d.groups.map(g => g.id).sort(), ['dup', 'toolong']);
+  assert.strictEqual(d.groups.find(g => g.id === 'dup').count, 1, 'ошибка из результата не дублируется');
+  const rp = retryParams(job, ['dup', 'toolong']);
+  assert.strictEqual(rp.params.mode, 'truncate'); assert.deepStrictEqual(rp.params.skipTables, ['big']);
+  assert(!rp.params.preSql && !('encryptionPassword' in rp.params) && rp.recheck);
+  const pg = diagnoseJob({ type: 'pgdump', status: 'done', params: {}, log: [{ level: 'info', msg: 'pg_restore: error: could not execute query: ERROR:  role "app_owner" does not exist' }] });
+  assert.strictEqual(pg.groups[0].id, 'role'); assert.deepStrictEqual(pg.fixes[0].patch, { noOwner: true, noPrivileges: true });
+  console.log('OK: проверка перед запуском и разбор ошибок');
+}

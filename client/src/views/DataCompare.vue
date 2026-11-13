@@ -58,6 +58,7 @@
       </div>
     </div>
 
+    <Preflight ref="pf" type="data-compare" run-text="Сравнить" @run="run" />
     <JobPanel v-if="jobId" :job-id="jobId" @done="onDone" @update="onUpdate" />
 
     <template v-if="result">
@@ -145,6 +146,7 @@ import { DxNumberBox } from 'devextreme-vue/number-box';
 import { DxTagBox } from 'devextreme-vue/tag-box';
 import { DxDataGrid, DxColumn, DxSelection, DxEditing, DxSearchPanel, DxScrolling, DxFilterRow, DxMasterDetail, DxPaging } from 'devextreme-vue/data-grid';
 import PeriodFilter from '../components/PeriodFilter.vue';
+import Preflight from '../components/Preflight.vue';
 import DbPicker from '../components/DbPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
 import AddToSuite from '../components/AddToSuite.vue';
@@ -156,6 +158,7 @@ import { lastPick, rememberPick, connType } from '../store';
 const route = useRoute();
 const lp = lastPick();
 const period = ref(null);
+const pf = ref(null);
 const src = ref(lp.src || { connId: null, schema: '' });
 const tgt = ref(lp.tgt || { connId: null, schema: '' });
 const tables = ref([]);
@@ -199,10 +202,11 @@ async function run() {
     keyColumns: t.keyColumns ? t.keyColumns.split(',').map(s => s.trim()).filter(Boolean) : undefined,
     sourceWhere: t.sourceWhere || undefined, targetWhere: t.targetWhere || undefined,
   }));
-  const params = {
+  const params = await pf.value.gate(JSON.parse(JSON.stringify({
     sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
     tables: tableSpecs, ...opts, emptyAsNull: opts.emptyAsNull ?? undefined, period: period.value || undefined,
-  };
+  })));
+  if (!params) return;
   syncJobId.value = null; syncResult.value = null;
   const j = await safe(() => api.post('/jobs/data-compare', params));
   if (j) { jobId.value = j.id; lastParams.value = params; }

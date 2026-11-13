@@ -131,6 +131,8 @@
     <!-- ===== Зависимости пакетов ===== -->
     <DepsTab v-if="tab === 3" ref="depsTab" :src="src" :tgt="tgt" />
 
+    <Preflight v-show="tab === 0" ref="pfPl" type="pipeline" @run="runPipeline(lastResume)" />
+    <Preflight v-show="tab === 1" ref="pfDl" type="delta" @run="runDelta" />
     <JobPanel v-if="jobId && tab < 3" :job-id="jobId" :report="false" @done="onDone" @update="onUpdate" />
   </div>
 </template>
@@ -149,6 +151,7 @@ import { confirm } from 'devextreme/ui/dialog';
 import DbPicker from '../components/DbPicker.vue';
 import ObjectPicker from '../components/ObjectPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
+import Preflight from '../components/Preflight.vue';
 import SchemaSyncPanel from '../components/SchemaSyncPanel.vue';
 import DepsTab from '../components/DepsTab.vue';
 import { api, safe, toast, fmtMs, fmtNum } from '../api';
@@ -195,15 +198,20 @@ async function loadRuns() {
     lastPipelineStart.value = `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:00`;
   }
 }
+const pfPl = ref(null), pfDl = ref(null);
+let lastResume;
 async function runPipeline(resume) {
   rememberPick({ src: src.value, tgt: tgt.value });
-  if (pl.mode !== 'append' && !(await confirm(`Таблицы приёмника (${tgt.value.schema}) будут очищены (${pl.mode.toUpperCase()}) и загружены заново. Продолжить?`, 'Миграция'))) return;
-  plResult.value = null;
-  const j = await safe(() => api.post('/jobs/pipeline', {
+  lastResume = resume;
+  // проверка перед запуском: схема, права, непустые таблицы, триггеры, колонки, последовательности
+  const params = await pfPl.value.gate({
     sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
     tables: pl.scope === 'selected' ? pl.objects.map(o => o.name) : undefined, structure: pl.structure, mode: pl.mode,
     parallel: pl.parallel, verify: pl.verify, keys: pl.keys, sequences: pl.sequences, analyze: pl.analyze, resumeJobId: resume || undefined,
-  }));
+  });
+  if (!params) return;
+  plResult.value = null;
+  const j = await safe(() => api.post('/jobs/pipeline', params));
   if (j) jobId.value = j.id;
 }
 
@@ -219,12 +227,14 @@ async function runDelta() {
   const bad = specs.filter(t => t.mode === 'column' && !t.column);
   if (bad.length) return toast(`Укажите колонку даты изменения: ${bad.map(t => t.source).join(', ')}`, 'warning');
   if (specs.some(t => t.mode === 'column') && !dl.since) return toast('Укажите, с какого момента искать изменения', 'warning');
-  if (dl.apply && !(await confirm('Изменить данные приёмника?', 'Догрузка изменений'))) return;
-  dlResult.value = null;
-  const j = await safe(() => api.post('/jobs/delta', {
+  const params = await pfDl.value.gate({
     sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
     tables: specs, since: dl.since, checkDeletes: dl.checkDeletes, apply: dl.apply,
-  }));
+  });
+  if (!params) return;
+  if (params.apply && !(await confirm('Изменить данные приёмника?', 'Догрузка изменений'))) return;
+  dlResult.value = null;
+  const j = await safe(() => api.post('/jobs/delta', params));
   if (j) jobId.value = j.id;
 }
 

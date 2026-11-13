@@ -39,6 +39,8 @@ function buildPlan(ta, tb, spec, opts, K) {
   // Ключ: явно заданный → PK источника → PK приёмника → первый уникальный
   let keyNames = spec.keyColumns && spec.keyColumns.length ? spec.keyColumns
     : ta.pk ? ta.pk.columns : tb.pk ? tb.pk.columns : (ta.uniques[0] || tb.uniques[0] || {}).columns;
+  // ключ, подобранный проверкой перед запуском (колонка с уникальными значениями)
+  if (!keyNames && opts.keyHints) keyNames = opts.keyHints[ta.name] || opts.keyHints[Object.keys(opts.keyHints).find(k => K(k) === K(ta.name))];
   keyNames = keyNames || [];
   const keys = [];
   for (const kn of keyNames) {

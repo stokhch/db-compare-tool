@@ -32,6 +32,7 @@
           <DxRadioGroup v-model:value="tr.mode" layout="horizontal" value-expr="v" display-expr="t"
             :items="[{ v: 'append', t: 'добавить' }, { v: 'truncate', t: 'очистить (TRUNCATE)' }, { v: 'delete', t: 'очистить (DELETE)' }]" />
         </div>
+        <div class="field" style="width:140px"><label>Таблиц параллельно</label><DxNumberBox v-model:value="tr.parallel" :min="1" :max="16" :show-spin-buttons="true" /></div>
         <div class="field" style="width:160px"><label>Строк в пачке (Oracle)</label><DxNumberBox v-model:value="tr.batchSize" :min="100" :max="10000" :step="500" :show-spin-buttons="true" /></div>
       </div>
       <div class="toolbar">
@@ -178,6 +179,10 @@
       </div>
     </div>
 
+    <Preflight v-show="tab === 0" ref="pfTr" type="transfer" @run="runTransfer" />
+    <Preflight v-show="tab === 1" ref="pfPd" type="pgdump" @run="runPgDump" />
+    <Preflight v-show="tab === 2" ref="pfDp" type="datapump" @run="runDataPump(false)" />
+    <Preflight v-show="tab === 3" ref="pfOp" type="ora2pg" @run="runOra2pg" />
     <JobPanel v-if="jobId" :job-id="jobId" :report="false" :log-open="true" @done="onDone" />
     <div v-if="trResult" class="panel">
       <h3>Итог перелива: {{ trResult.summary.done }} из {{ trResult.summary.tables }} таблиц, {{ fmtNum(trResult.summary.rows) }} строк</h3>
@@ -210,6 +215,8 @@ import { confirm } from 'devextreme/ui/dialog';
 import DbPicker from '../components/DbPicker.vue';
 import ConnSelect from '../components/ConnSelect.vue';
 import JobPanel from '../components/JobPanel.vue';
+import Preflight from '../components/Preflight.vue';
+import { useJobFromRoute } from '../jobroute';
 import { api, safe, toast, STATUS, fmtMs, fmtNum, fmtSize } from '../api';
 import { rememberPick } from '../store';
 import { relatedKeys } from '../related';
@@ -218,9 +225,10 @@ const router = useRouter();
 const tabs = [{ text: 'Перелив таблиц (любые СУБД)' }, { text: 'PostgreSQL: pg_dump / pg_restore' }, { text: 'Oracle: Data Pump' }, { text: 'ora2pg' }];
 const tab = ref(0);
 const jobId = ref(null);
+const pfTr = ref(null), pfPd = ref(null), pfDp = ref(null), pfOp = ref(null);
 
 // --- перелив
-const tr = reactive({ src: { connId: null, schema: '' }, tgt: { connId: null, schema: '' }, mode: 'append', batchSize: 1000, createTables: true, disableFk: true, syncSequences: true, stopOnError: false });
+const tr = reactive({ src: { connId: null, schema: '' }, tgt: { connId: null, schema: '' }, mode: 'append', parallel: 1, batchSize: 1000, createTables: true, disableFk: true, syncSequences: true, stopOnError: false });
 const trTables = ref([]); const trSel = ref([]); const trResult = ref(null);
 async function loadTrTables() {
   const r = await safe(() => api.get(`/connections/${tr.src.connId}/tables?schema=${encodeURIComponent(tr.src.schema)}`));
@@ -238,12 +246,14 @@ async function addTrRelated() {
   toast(added ? `Добавлено родительских таблиц: ${added} — без них не загрузятся внешние ключи` : 'Новых связанных таблиц нет', added ? 'success' : 'info');
 }
 async function runTransfer() {
-  trResult.value = null;
-  const j = await safe(() => api.post('/jobs/transfer', {
+  const params = await pfTr.value.gate({
     sourceId: tr.src.connId, sourceSchema: tr.src.schema, targetId: tr.tgt.connId, targetSchema: tr.tgt.schema,
-    tables: trSel.value, mode: tr.mode, batchSize: tr.batchSize, createTables: tr.createTables, disableFk: tr.disableFk,
-    syncSequences: tr.syncSequences, stopOnError: tr.stopOnError,
-  }));
+    tables: [...trSel.value], mode: tr.mode, batchSize: tr.batchSize, createTables: tr.createTables, disableFk: tr.disableFk,
+    syncSequences: tr.syncSequences, stopOnError: tr.stopOnError, parallel: tr.parallel,
+  });
+  if (!params) return;
+  trResult.value = null;
+  const j = await safe(() => api.post('/jobs/transfer', params));
   if (j) jobId.value = j.id;
 }
 
@@ -257,7 +267,9 @@ async function runPgDump() {
   if (pd.mode !== 'restore_only' && !pd.sourceId) return toast('Выберите источник', 'warning');
   if (pd.mode !== 'dump_only' && !pd.targetId) return toast('Выберите приёмник', 'warning');
   if (pd.mode === 'restore_only' && !pd.dumpFile) return toast('Выберите файл дампа', 'warning');
-  const j = await safe(() => api.post('/jobs/pgdump', { ...pd }));
+  const params = await pfPd.value.gate(JSON.parse(JSON.stringify(pd)));
+  if (!params) return;
+  const j = await safe(() => api.post('/jobs/pgdump', params));
   if (j) jobId.value = j.id;
 }
 
@@ -266,11 +278,14 @@ const dp = reactive({ src: { connId: null, schema: '' }, tgt: { connId: null, sc
 const dpCommands = ref(null);
 async function runDataPump(commandsOnly) {
   dpCommands.value = null;
-  const j = await safe(() => api.post('/jobs/datapump', {
+  const base = {
     sourceId: dp.src.connId, sourceSchema: dp.src.schema, targetId: dp.tgt.connId, targetSchema: dp.tgt.schema || dp.src.schema,
     tableExistsAction: dp.tableExistsAction, content: dp.content, parallel: dp.parallel, dbLinkName: dp.dbLinkName,
-    tables: dp.tables, createDbLink: dp.createDbLink, dropDbLinkAfter: dp.dropDbLinkAfter, commandsOnly,
-  }));
+    tables: [...dp.tables], createDbLink: dp.createDbLink, dropDbLinkAfter: dp.dropDbLinkAfter, commandsOnly,
+  };
+  const params = commandsOnly ? base : await pfDp.value.gate(base);
+  if (!params) return;
+  const j = await safe(() => api.post('/jobs/datapump', params));
   if (j) jobId.value = j.id;
 }
 
@@ -279,12 +294,14 @@ const op = reactive({ src: { connId: null, schema: '' }, tgt: { connId: null, sc
 const actions = ref([]); const tools = ref(null); const opResult = ref(null);
 async function runOra2pg() {
   opResult.value = null;
-  const j = await safe(() => api.post('/jobs/ora2pg', {
+  const params = await pfOp.value.gate({
     sourceId: op.src.connId, sourceSchema: op.src.schema, targetId: op.tgt.connId || undefined,
     targetSchema: op.useTargetSchema && op.tgt.schema ? op.tgt.schema : undefined,
     action: op.action, parallelTables: op.parallelTables, oracleCopies: op.oracleCopies, jobs: op.jobs,
     allowTables: op.allowTables, excludeTables: op.excludeTables, countRows: op.countRows, truncateTable: op.truncateTable, extraConfig: op.extraConfig,
-  }));
+  });
+  if (!params) return;
+  const j = await safe(() => api.post('/jobs/ora2pg', params));
   if (j) jobId.value = j.id;
 }
 
@@ -297,6 +314,7 @@ function onDone(j) {
 }
 function toCompare(src, tgt) { rememberPick({ src, tgt }); router.push('/schema'); }
 
+useJobFromRoute(['transfer', 'pgdump', 'datapump', 'ora2pg'], j => { tab.value = { transfer: 0, pgdump: 1, datapump: 2, ora2pg: 3 }[j.type]; jobId.value = j.id; });
 onMounted(async () => {
   loadDumps();
   const t = await safe(() => api.get('/tools'));

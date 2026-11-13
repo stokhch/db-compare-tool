@@ -48,4 +48,8 @@ const JOB_TYPES = {
 // Регламентные проверки (набор проверок) — подключаются отдельно, чтобы избежать циклических зависимостей
 JOB_TYPES.suite = { title: p => `Регламент: ${p.suiteName || p.suiteId}`, run: (p, ctx) => require('./verify/suites').runSuite(p, ctx) };
 
+// SQL до и после задачи (preSql / postSql) — исправления из проверки перед запуском
+const { withSql } = require('./preflight/common');
+for (const def of Object.values(JOB_TYPES)) def.run = withSql(def.run);
+
 module.exports = { JOB_TYPES };
