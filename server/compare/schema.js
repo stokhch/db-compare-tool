@@ -6,6 +6,8 @@ const { loadMeta } = require('../meta');
 const { compatibility } = require('../lib/typemap');
 const { getConnection, publicConnection } = require('../lib/store');
 const { plpgsqlCheck } = require('./pgcheck');
+const { filterMeta } = require('../meta/objects');
+const { buildSchemaSync } = require('./syncschema');
 
 const CAT = {
   tables: 'Таблицы', columns: 'Колонки', pk: 'Первичные ключи', uniques: 'Уникальные ключи',
@@ -29,7 +31,7 @@ async function runSchemaCompare(p, ctx) {
   ctx.progress(0, 0, 'Подключение…');
 
   const [src, tgt] = await Promise.all([connect(srcConn), connect(tgtConn)]);
-  let A, B;
+  let A, B, sync = null;
   try {
     ctx.progress(0, 0, 'Чтение метаданных источника…');
     A = await loadMeta(src, p.sourceSchema, opts, ctx);
@@ -37,6 +39,12 @@ async function runSchemaCompare(p, ctx) {
     ctx.progress(0, 0, 'Чтение метаданных приёмника…');
     // Если сравниваем Oracle -> PG, функции пакетов ora2pg кладёт в схемы с именами пакетов
     B = await loadMeta(tgt, p.targetSchema, opts, ctx, A.packages || []);
+    // Только выбранные объекты
+    if (p.objects && p.objects.length) {
+      A = filterMeta(A, p.objects, K);
+      B = filterMeta(B, p.objects, K);
+      ctx.log(`Сравниваются только выбранные объекты: ${p.objects.length}`);
+    }
     // Проверка кода PL/pgSQL (аналог INVALID в Oracle)
     if (p.checkPgCode !== false) {
       for (const [side, db, meta] of [['source', src, A], ['target', tgt, B]]) {
@@ -46,10 +54,21 @@ async function runSchemaCompare(p, ctx) {
         const schemas = [meta.schema, ...new Set(meta.routines.filter(r => r.package).map(r => r.package))];
         try {
           meta.pgcheck = await plpgsqlCheck(db, schemas, { extra: !!p.pgCheckExtra });
+          if (meta.filtered) {
+            const okNames = new Set([...meta.routines.map(r => K(r.name.split('.').pop())), ...meta.triggers.map(t => K(t.name))]);
+            meta.pgcheck.messages = meta.pgcheck.messages.filter(m =>
+              okNames.has(K(m.function.replace(/\(.*$/, '').split('.').pop())) || (m.trigger && okNames.has(K(m.trigger))));
+          }
           ctx.log(meta.pgcheck.available ? `plpgsql_check (${side}): проверено ${meta.pgcheck.checked}, сообщений ${meta.pgcheck.messages.length}` : meta.pgcheck.note,
             meta.pgcheck.available ? 'info' : 'warning');
         } catch (e) { meta.pgcheck = { available: false, note: `plpgsql_check: ${e.message}`, messages: [] }; }
       }
+    }
+    // Скрипт синхронизации структуры (приёмник → как источник)
+    if (p.buildSync !== false) {
+      ctx.progress(0, 0, 'Скрипт синхронизации…');
+      try { sync = await buildSchemaSync(src, tgt, A, B, p, K); ctx.log(`Скрипт синхронизации: операторов ${sync.statements.length}`); }
+      catch (e) { ctx.log(`Скрипт синхронизации не построен: ${e.message}`, 'warning'); }
     }
   } finally {
     await Promise.all([src.close(), tgt.close()]);
@@ -220,6 +239,8 @@ async function runSchemaCompare(p, ctx) {
     categories,
     findings,
     commonTables,
+    objectsFilter: p.objects && p.objects.length ? p.objects.length : 0,
+    sync,
   };
 }
 

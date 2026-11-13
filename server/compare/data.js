@@ -57,7 +57,7 @@ function buildSelect(db, schema, table, cols, keys, where, ordered) {
   return sql;
 }
 
-async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize, K) {
+async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize, K, sink) {
   const t0 = Date.now();
   const plan = buildPlan(ta, tb, spec, p, K);
   const res = {
@@ -75,7 +75,8 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
   const whereA = spec.sourceWhere || p.sourceWhere || '';
   const whereB = spec.targetWhere || p.targetWhere || '';
 
-  const normRow = (row, side) => all.map((c, i) => (side === 'a' ? c.normA : c.normB)(row[i]));
+  const normRow = (row, side) => { const n = all.map((c, i) => (side === 'a' ? c.normA : c.normB)(row[i])); n.raw = row; return n; };
+  const w = sink ? sink.begin(ta, tb, all, nk) : null; // генератор скрипта синхронизации данных
   const keyObj = nr => Object.fromEntries(plan.keys.map((k, i) => [k.name, nr[i]]));
   const rowObj = nr => Object.fromEntries(all.map((c, i) => [c.name, short(nr[i])]));
   const pushDiff = (d) => { if (res.diffs.length < maxDiffs) res.diffs.push(d); };
@@ -96,7 +97,7 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
     for (let i = nk; i < all.length; i++) {
       if (na[i] !== nb[i]) {
         if (withinTol(all[i], na[i], nb[i])) { tolHit = true; continue; }
-        cols.push({ name: all[i].name, source: short(na[i]), target: short(nb[i]) });
+        cols.push({ name: all[i].name, source: short(na[i]), target: short(nb[i]), idx: i });
         res.diffColumns[all[i].name] = (res.diffColumns[all[i].name] || 0) + 1;
       }
     }
@@ -124,24 +125,25 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
         const k = h(nr);
         const c = bag.get(k);
         if (c) { if (c === 1) bag.delete(k); else bag.set(k, c - 1); }
-        else { res.missing++; pushDiff({ type: 'missing_in_target', key: null, row: rowObj(nr) }); }
+        else { res.missing++; pushDiff({ type: 'missing_in_target', key: null, row: rowObj(nr) }); if (w) w.missing(nr); }
       }
       tick();
     }
     for (const c of bag.values()) res.extra += c;
-    if (res.extra && res.diffs.length < maxDiffs) {
+    if (res.extra && (w || res.diffs.length < maxDiffs)) {
       // второй проход по приёмнику — показать примеры лишних строк
       for await (const batch of tgt.stream(buildSelect(tgt, p.targetSchema, tb.name, colsB, [], whereB, false), [], fetchSize)) {
         for (const r of batch) {
           const nr = normRow(r, 'b');
           const k = h(nr);
-          if (bag.get(k)) { bag.set(k, bag.get(k) - 1); pushDiff({ type: 'extra_in_target', key: null, row: rowObj(nr) }); }
-          if (res.diffs.length >= maxDiffs) break;
+          if (bag.get(k)) { bag.set(k, bag.get(k) - 1); pushDiff({ type: 'extra_in_target', key: null, row: rowObj(nr) }); if (w) w.extra(nr); }
+          if (!w && res.diffs.length >= maxDiffs) break;
         }
-        if (res.diffs.length >= maxDiffs) break;
+        if (!w && res.diffs.length >= maxDiffs) break;
       }
     }
     finish(res, t0);
+    if (w) await w.end(res);
     return res;
   }
 
@@ -164,8 +166,10 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
   if (mergeable) {
     try {
       res.mode = 'merge';
+      if (w) w.reset();
       await mergeJoin();
       finish(res, t0);
+      if (w) await w.end(res);
       return res;
     } catch (e) {
       if (!(e instanceof OrderMismatch)) throw e;
@@ -174,8 +178,10 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
     }
   }
   res.mode = 'map';
+  if (w) w.reset();
   await mapJoin();
   finish(res, t0);
+  if (w) await w.end(res);
   return res;
 
   // ---------- merge-join ----------
@@ -201,16 +207,16 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
       if (a.done) c = 1; else if (b.done) c = -1; else c = cmpKey(a.value, b.value);
       if (c === 0) {
         const cols = compareValues(a.value, b.value);
-        if (cols.length) { res.different++; pushDiff({ type: 'different', key: keyObj(a.value), columns: cols }); }
+        if (cols.length) { res.different++; pushDiff({ type: 'different', key: keyObj(a.value), columns: cols }); if (w) w.different(a.value, b.value, cols); }
         else if (tolHit) res.withinTolerance++;
         prevA = a.value; prevB = b.value;
         res.sourceRows++; res.targetRows++;
         a = await itA.next(); b = await itB.next();
       } else if (c < 0) {
-        res.missing++; pushDiff({ type: 'missing_in_target', key: keyObj(a.value), row: rowObj(a.value) });
+        res.missing++; pushDiff({ type: 'missing_in_target', key: keyObj(a.value), row: rowObj(a.value) }); if (w) w.missing(a.value);
         res.sourceRows++; prevA = a.value; a = await itA.next();
       } else {
-        res.extra++; pushDiff({ type: 'extra_in_target', key: keyObj(b.value), row: rowObj(b.value) });
+        res.extra++; pushDiff({ type: 'extra_in_target', key: keyObj(b.value), row: rowObj(b.value) }); if (w) w.extra(b.value);
         res.targetRows++; prevB = b.value; b = await itB.next();
       }
     }
@@ -234,14 +240,14 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
         const nr = normRow(r, 'a');
         const k = keyStr(nr);
         const hb = target.get(k);
-        if (hb === undefined) { res.missing++; pushDiff({ type: 'missing_in_target', key: keyObj(nr), row: rowObj(nr) }); continue; }
+        if (hb === undefined) { res.missing++; pushDiff({ type: 'missing_in_target', key: keyObj(nr), row: rowObj(nr) }); if (w) w.missing(nr); continue; }
         target.delete(k);
         if (hb !== valHash(nr)) suspects.set(k, nr);
       }
       tick();
     }
     res.extra = target.size;
-    const extraKeys = new Set([...target.keys()].slice(0, maxDiffs));
+    const extraKeys = w ? new Set(target.keys()) : new Set([...target.keys()].slice(0, maxDiffs));
     target.clear();
     if (suspects.size || extraKeys.size) {
       for await (const batch of tgt.stream(buildSelect(tgt, p.targetSchema, tb.name, colsB, [], whereB, false), [], fetchSize)) {
@@ -251,9 +257,9 @@ async function compareTable(src, tgt, ta, tb, spec, p, ctx, maxDiffs, fetchSize,
           const na = suspects.get(k);
           if (na) {
             const cols = compareValues(na, nb);
-            if (cols.length) { res.different++; pushDiff({ type: 'different', key: keyObj(nb), columns: cols }); }
+            if (cols.length) { res.different++; pushDiff({ type: 'different', key: keyObj(nb), columns: cols }); if (w) w.different(na, nb, cols); }
             else if (tolHit) res.withinTolerance++;
-          } else if (extraKeys.has(k)) pushDiff({ type: 'extra_in_target', key: keyObj(nb), row: rowObj(nb) });
+          } else if (extraKeys.has(k)) { pushDiff({ type: 'extra_in_target', key: keyObj(nb), row: rowObj(nb) }); if (w) w.extra(nb); }
         }
         tick();
       }
@@ -272,15 +278,16 @@ function finish(res, t0) {
   res.status = res.missing || res.extra || res.different ? 'different' : 'equal';
 }
 
-async function runDataCompare(p, ctx) {
+async function runDataCompare(p, ctx, sink) {
   const settings = getSettings();
   const srcConn = getConnection(p.sourceId);
   const tgtConn = getConnection(p.targetId);
   const K = p.caseSensitive ? (x => String(x)) : (x => String(x).toLowerCase());
   const maxDiffs = Number(p.maxDiffs || settings.maxDiffsPerTable || 200);
   const fetchSize = Number(settings.fetchSize || 2000);
-  const parallel = Math.max(1, Math.min(Number(p.parallel || 2), 8));
+  const parallel = sink ? 1 : Math.max(1, Math.min(Number(p.parallel || 2), 8));
   const opts = { ...p, emptyAsNull: p.emptyAsNull ?? srcConn.type !== tgtConn.type };
+  if (sink) opts.compareLobs = true; // для INSERT нужны все колонки
 
   ctx.log(`Источник: ${srcConn.name} / ${p.sourceSchema}; приёмник: ${tgtConn.name} / ${p.targetSchema}`);
   ctx.progress(0, 0, 'Чтение структуры таблиц…');
@@ -308,6 +315,12 @@ async function runDataCompare(p, ctx) {
     }
     queue.push({ s, ta, tb });
   }
+  if (sink) {
+    // порядок по внешним ключам: родительские таблицы раньше дочерних
+    const order = require('../copy/transfer').topoOrder(queue.map(x => x.ta), K).map(t => K(t.name));
+    queue.sort((x, y) => order.indexOf(K(x.ta.name)) - order.indexOf(K(y.ta.name)));
+    sink.order = order;
+  }
   const total = queue.length;
   let done = 0;
   ctx.progress(0, total, `Таблиц к сравнению: ${total}`);
@@ -322,7 +335,7 @@ async function runDataCompare(p, ctx) {
         ctx.checkCancel();
         const { s, ta, tb } = queue.shift();
         try {
-          const r = await compareTable(src, tgt, ta, tb, s, opts, sub, maxDiffs, fetchSize, K);
+          const r = await compareTable(src, tgt, ta, tb, s, opts, sub, maxDiffs, fetchSize, K, sink);
           results.push(r);
           ctx.log(`${ta.name}: ${r.status === 'equal' ? 'совпадает' : `отличия — нет в приёмнике ${r.missing}, лишних ${r.extra}, различаются ${r.different}`} (${r.sourceRows}/${r.targetRows} строк, ${r.mode}, ${r.ms} мс)`, r.status === 'equal' ? 'info' : 'warning');
         } catch (e) {

@@ -6,6 +6,10 @@ const store = require('./lib/store');
 const jobs = require('./lib/jobs');
 const { withDb } = require('./db');
 const { listTables } = require('./meta');
+const { listObjects } = require('./meta/objects');
+const { renderScript } = require('./compare/syncschema');
+const { runApplySql } = require('./copy/applysql');
+const { runDataSync, SYNC_DIR } = require('./compare/syncdata');
 const { renderReport } = require('./lib/report');
 const { runSchemaCompare } = require('./compare/schema');
 const { runDataCompare } = require('./compare/data');
@@ -38,6 +42,7 @@ app.post('/api/connections/test', h(async req => {
   return { ok: true, version, ms: Date.now() - t0 };
 }));
 app.get('/api/connections/:id/schemas', h(req => withDb(req.params.id, db => db.schemas())));
+app.get('/api/connections/:id/objects', h(req => withDb(req.params.id, db => listObjects(db, req.query.schema || db.defaultSchema))));
 app.get('/api/connections/:id/tables', h(req => withDb(req.params.id, db => listTables(db, req.query.schema || db.defaultSchema))));
 
 // ---------- Настройки и утилиты ----------
@@ -64,6 +69,8 @@ const JOB_TYPES = {
   pgdump: { title: p => `pg_dump/pg_restore (${p.mode || 'dump_restore'})`, run: runPgDump },
   datapump: { title: p => `Data Pump: ${p.sourceSchema} → ${p.targetSchema || p.sourceSchema}`, run: runDataPump },
   ora2pg: { title: p => `ora2pg ${p.action}: ${p.sourceSchema}`, run: runOra2pg },
+  'data-sync': { title: p => `Синхронизация данных: ${p.sourceSchema} → ${p.targetSchema}${p.apply ? ' (с выполнением)' : ''}`, run: runDataSync },
+  'apply-sql': { title: p => `Выполнение скрипта: ${(p.statements || []).length} операторов`, run: runApplySql },
 };
 app.post('/api/jobs/:type', h(req => {
   const t = JOB_TYPES[req.params.type];
@@ -96,11 +103,18 @@ app.get('/api/jobs/:id/log.txt', h((req, res) => {
   res.type('text/plain; charset=utf-8').send(j.log.map(l => `${l.t} [${l.level}] ${l.msg}`).join('\n'));
 }));
 
+app.post('/api/sync/render', h(req => ({ script: renderScript(req.body, req.body.statements || []) })));
+
 // Файлы ora2pg и дампы
 app.get('/api/files/ora2pg/:jobId/:name', (req, res) => {
   const f = path.join(store.DATA_DIR, 'ora2pg', path.basename(req.params.jobId), path.basename(req.params.name));
   if (!fs.existsSync(f)) return res.status(404).send('Нет файла');
   if (/\.(html?)$/i.test(f) && req.query.view) return res.type('html').sendFile(f);
+  res.download(f);
+});
+app.get('/api/files/sync/:jobId/:name', (req, res) => {
+  const f = path.join(SYNC_DIR, path.basename(req.params.jobId), path.basename(req.params.name));
+  if (!fs.existsSync(f)) return res.status(404).send('Нет файла');
   res.download(f);
 });
 app.get('/api/dumps', h(() => listDumps()));

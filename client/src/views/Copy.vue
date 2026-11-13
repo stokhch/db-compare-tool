@@ -15,7 +15,11 @@
       </div>
       <div class="toolbar">
         <DxButton text="Загрузить таблицы источника" icon="refresh" styling-mode="outlined" :disabled="!tr.src.connId || !tr.src.schema" @click="loadTrTables" />
-        <span class="hint" v-if="trTables.length">Таблиц: {{ trTables.length }}, выбрано: {{ trSel.length || 'все' }}</span>
+        <template v-if="trTables.length">
+          <span class="hint">Таблиц: {{ trTables.length }}, выбрано: {{ trSel.length || 'все' }}. Фильтр по подстроке — в поле поиска.</span>
+          <span style="flex:1" />
+          <DxButton text="Добавить родительские таблицы (FK)" icon="link" styling-mode="outlined" :disabled="!trSel.length" @click="addTrRelated" />
+        </template>
       </div>
       <DxDataGrid v-if="trTables.length" :data-source="trTables" key-expr="name" :height="260" :show-borders="true"
         :selected-row-keys="trSel" @selection-changed="e => (trSel = e.selectedRowKeys)">
@@ -208,6 +212,7 @@ import ConnSelect from '../components/ConnSelect.vue';
 import JobPanel from '../components/JobPanel.vue';
 import { api, safe, toast, STATUS, fmtMs, fmtNum, fmtSize } from '../api';
 import { rememberPick } from '../store';
+import { relatedKeys } from '../related';
 
 const router = useRouter();
 const tabs = [{ text: 'Перелив таблиц (любые СУБД)' }, { text: 'PostgreSQL: pg_dump / pg_restore' }, { text: 'Oracle: Data Pump' }, { text: 'ora2pg' }];
@@ -220,6 +225,17 @@ const trTables = ref([]); const trSel = ref([]); const trResult = ref(null);
 async function loadTrTables() {
   const r = await safe(() => api.get(`/connections/${tr.src.connId}/tables?schema=${encodeURIComponent(tr.src.schema)}`));
   if (r) { trTables.value = r; trSel.value = []; }
+}
+async function addTrRelated() {
+  const r = await safe(() => api.get(`/connections/${tr.src.connId}/objects?schema=${encodeURIComponent(tr.src.schema)}`));
+  if (!r) return;
+  const known = new Set(trTables.value.map(t => t.name));
+  const deps = r.deps.filter(d => d.from.startsWith('table:') && d.to.startsWith('table:'));
+  const res = relatedKeys(deps, trSel.value.map(n => `table:${n}`), { direction: 'deps', recursive: true, onlyTypes: ['table'] })
+    .map(k => k.slice(6)).filter(n => known.has(n));
+  const added = res.length - trSel.value.length;
+  trSel.value = res;
+  toast(added ? `Добавлено родительских таблиц: ${added} — без них не загрузятся внешние ключи` : 'Новых связанных таблиц нет', added ? 'success' : 'info');
 }
 async function runTransfer() {
   trResult.value = null;

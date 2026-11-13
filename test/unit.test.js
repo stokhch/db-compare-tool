@@ -108,3 +108,35 @@ const hintCases = [
 ];
 for (const [e, re] of hintCases) assert(re.test(hintFor(e) || ''), e.message);
 console.log('OK: подсказки к ошибкам подключения');
+
+// --- литералы скрипта синхронизации данных ---
+const { makeLiteral } = require('../server/compare/syncdata');
+{
+  const st = { lobSkipped: 0 };
+  const ora = makeLiteral('oracle', st), pg = makeLiteral('postgres', st);
+  assert.strictEqual(ora("it's", { family: 'string', dataType: 'VARCHAR2' }), "'it''s'");
+  assert.strictEqual(ora('2024-01-02 03:04:05.120000', { family: 'datetime', dataType: 'DATE' }), "TO_DATE('2024-01-02 03:04:05', 'YYYY-MM-DD HH24:MI:SS')");
+  assert.strictEqual(ora('2024-01-02 03:04:05.12+00', { family: 'datetime', dataType: 'TIMESTAMP(6)' }), "TO_TIMESTAMP('2024-01-02 03:04:05.120000', 'YYYY-MM-DD HH24:MI:SS.FF')");
+  assert.strictEqual(ora(true, { family: 'int', dataType: 'NUMBER' }), '1');
+  assert.strictEqual(ora('x'.repeat(2500), { family: 'text', dataType: 'CLOB' }).split('TO_CLOB(').length - 1, 3);
+  assert.strictEqual(ora(Buffer.from('ab'), { family: 'binary', dataType: 'BLOB' }), "HEXTORAW('6162')");
+  assert.strictEqual(pg('1', { family: 'bool', udt: 'bool' }), 'true');
+  assert.strictEqual(pg('2024-01-02 03:04:05', { family: 'datetimetz', udt: 'timestamptz' }), "'2024-01-02 03:04:05.000000+00'");
+  assert.strictEqual(pg(Buffer.from('ab'), { family: 'binary', udt: 'bytea' }), "'\\x6162'::bytea");
+  assert.strictEqual(pg('12.50', { family: 'numeric', udt: 'numeric' }), '12.50');
+  assert.strictEqual(pg(null, { family: 'text' }), 'NULL');
+}
+// --- фильтр объектов ---
+const { filterMeta } = require('../server/meta/objects');
+{
+  const meta = { tables: [{ name: 'EMP' }, { name: 'DEPT' }], views: [{ name: 'V_EMP' }], mviews: [], sequences: [{ name: 'S1' }],
+    routines: [{ key: 'PKG.CALC', name: 'PKG.CALC', kind: 'package routine', package: 'PKG' }, { key: 'F1', name: 'F1', kind: 'function' }],
+    triggers: [], types: [], packages: ['PKG'], invalid: [] };
+  const lc = x => String(x).toLowerCase();
+  const f = filterMeta(meta, [{ type: 'table', name: 'emp' }, { type: 'package', name: 'PKG' }], lc);
+  assert.deepStrictEqual(f.tables.map(t => t.name), ['EMP']);
+  assert.deepStrictEqual(f.routines.map(r => r.key), ['PKG.CALC']);
+  const pgMeta = { ...meta, routines: [{ key: 'pkg_calc', name: 'pkg_calc', kind: 'function' }, { key: 'other', name: 'other', kind: 'function' }] };
+  assert.deepStrictEqual(filterMeta(pgMeta, [{ type: 'package', name: 'PKG' }], lc).routines.map(r => r.key), ['pkg_calc']);
+}
+console.log('OK: литералы синхронизации и фильтр объектов');

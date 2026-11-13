@@ -9,7 +9,12 @@
       </div>
       <div class="toolbar">
         <DxButton text="Загрузить список таблиц" icon="refresh" styling-mode="outlined" :disabled="!ready" @click="loadTables" />
-        <span class="hint" v-if="tables.length">Общих таблиц: {{ tables.length }}, выбрано: {{ selected.length || 'все' }}. Ключ и WHERE можно задать для каждой таблицы (двойной клик по ячейке).</span>
+        <template v-if="tables.length">
+          <span class="hint">Общих таблиц: {{ tables.length }}, выбрано: {{ selected.length || 'все' }}. Фильтр по подстроке — в поле поиска; ключ и WHERE задаются двойным кликом по ячейке.</span>
+          <span style="flex:1" />
+          <DxSelectBox v-model:value="relDir" :items="[{ v: 'deps', t: 'родительские (FK)' }, { v: 'dependents', t: 'дочерние (FK)' }, { v: 'both', t: 'родительские и дочерние' }]" value-expr="v" display-expr="t" :width="230" />
+          <DxButton text="Добавить связанные таблицы" icon="link" styling-mode="outlined" :disabled="!selected.length" @click="addRelated" />
+        </template>
       </div>
       <DxDataGrid v-if="tables.length" :data-source="tables" key-expr="source" :show-borders="true" :height="300"
         :selected-row-keys="selected" @selection-changed="e => (selected = e.selectedRowKeys)">
@@ -54,6 +59,26 @@
     <JobPanel v-if="jobId" :job-id="jobId" @done="onDone" @update="onUpdate" />
 
     <template v-if="result">
+      <div v-if="lastParams && (result.summary.different || 0) > 0" class="panel">
+        <div class="toolbar" style="margin:0">
+          <b>Скрипт синхронизации данных</b>
+          <span class="hint">Приводит данные приёмника к источнику для таблиц с отличиями. Порядок — по внешним ключам.</span>
+        </div>
+        <div class="toolbar" style="margin:8px 0 0">
+          <DxCheckBox v-model:value="syncOpt.insert" text="INSERT отсутствующих строк" />
+          <DxCheckBox v-model:value="syncOpt.update" text="UPDATE отличающихся" />
+          <DxCheckBox v-model:value="syncOpt.delete" text="DELETE лишних в приёмнике" />
+          <DxCheckBox v-model:value="syncOpt.apply" text="Сразу выполнить на приёмнике" />
+          <DxButton :text="syncOpt.apply ? 'Построить и выполнить' : 'Построить скрипт'" icon="codeblock" :type="syncOpt.apply ? 'danger' : 'default'" @click="runSync" />
+        </div>
+        <JobPanel v-if="syncJobId" :job-id="syncJobId" :report="false" @done="j => (syncResult = j.result)" />
+        <div v-if="syncResult" class="toolbar" style="margin-top:8px">
+          <span>INSERT: <b>{{ fmtNum(syncResult.summary.insert) }}</b>, UPDATE: <b>{{ fmtNum(syncResult.summary.update) }}</b>, DELETE: <b>{{ fmtNum(syncResult.summary.delete) }}</b></span>
+          <span v-if="syncResult.applied" class="ok">выполнено на приёмнике: {{ fmtNum(syncResult.applied.executed) }}</span>
+          <a :href="`/api/files/sync/${syncResult.script.jobId}/${encodeURIComponent(syncResult.script.name)}`">Скачать {{ syncResult.script.name }} ({{ fmtSize(syncResult.script.size) }})</a>
+          <span v-if="syncResult.stats.deleteNoKey" class="warning">В таблицах без ключа лишних строк {{ syncResult.stats.deleteNoKey }} — удалить скриптом нельзя.</span>
+        </div>
+      </div>
       <div class="cards">
         <div class="card"><div class="v">{{ result.summary.tables }}</div><div class="l">таблиц</div></div>
         <div class="card"><div class="v ok">{{ result.summary.equal || 0 }}</div><div class="l">совпадают</div></div>
@@ -119,8 +144,10 @@ import { DxTagBox } from 'devextreme-vue/tag-box';
 import { DxDataGrid, DxColumn, DxSelection, DxEditing, DxSearchPanel, DxScrolling, DxFilterRow, DxMasterDetail, DxPaging } from 'devextreme-vue/data-grid';
 import DbPicker from '../components/DbPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
-import { api, safe, toast, STATUS, fmtMs, fmtNum } from '../api';
-import { lastPick, rememberPick } from '../store';
+import { api, safe, toast, STATUS, fmtMs, fmtNum, fmtSize } from '../api';
+import { relatedKeys } from '../related';
+import { confirm } from 'devextreme/ui/dialog';
+import { lastPick, rememberPick, connType } from '../store';
 
 const route = useRoute();
 const lp = lastPick();
@@ -131,6 +158,11 @@ const selected = ref([]);
 const opts = reactive({ absTolerance: 0, relTolerance: 0, emptyAsNull: null, maxDiffs: 200, parallel: 2, floatPrecision: 15, excludeColumns: [], trimTrailingSpaces: false, compareLobs: true, forceMapMode: false });
 const jobId = ref(null);
 const result = ref(null);
+const relDir = ref('deps');
+const lastParams = ref(null);
+const syncOpt = reactive({ insert: true, update: true, delete: false, apply: false });
+const syncJobId = ref(null);
+const syncResult = ref(null);
 const DT = { missing_in_target: 'Нет в приёмнике', extra_in_target: 'Лишняя в приёмнике', different: 'Отличается' };
 const stLookup = [{ v: 'equal', t: 'Совпадает' }, { v: 'different', t: 'Отличается' }, { v: 'error', t: 'Ошибка' }, { v: 'skipped', t: 'Пропущено' }];
 const ready = computed(() => src.value.connId && src.value.schema && tgt.value.connId && tgt.value.schema);
@@ -162,11 +194,37 @@ async function run() {
     keyColumns: t.keyColumns ? t.keyColumns.split(',').map(s => s.trim()).filter(Boolean) : undefined,
     sourceWhere: t.sourceWhere || undefined, targetWhere: t.targetWhere || undefined,
   }));
-  const j = await safe(() => api.post('/jobs/data-compare', {
+  const params = {
     sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
     tables: tableSpecs, ...opts, emptyAsNull: opts.emptyAsNull ?? undefined,
-  }));
-  if (j) jobId.value = j.id;
+  };
+  syncJobId.value = null; syncResult.value = null;
+  const j = await safe(() => api.post('/jobs/data-compare', params));
+  if (j) { jobId.value = j.id; lastParams.value = params; }
+}
+
+async function addRelated() {
+  const r = await safe(() => api.get(`/connections/${src.value.connId}/objects?schema=${encodeURIComponent(src.value.schema)}`));
+  if (!r) return;
+  const names = new Map(tables.value.map(t => [t.source, t.source]));
+  const deps = r.deps.filter(d => d.from.startsWith('table:') && d.to.startsWith('table:'));
+  const res = relatedKeys(deps, selected.value.map(n => `table:${n}`), { direction: relDir.value, recursive: true, onlyTypes: ['table'] })
+    .map(k => k.slice(6)).filter(n => names.has(n));
+  const added = res.length - selected.value.length;
+  selected.value = res;
+  toast(added ? `Добавлено связанных таблиц: ${added}` : 'Новых связанных таблиц нет', added ? 'success' : 'info');
+}
+
+async function runSync() {
+  if (!lastParams.value) return;
+  if (syncOpt.apply && !(await confirm(`Изменить данные приёмника?${syncOpt.delete ? '<br><b>Включено удаление лишних строк.</b>' : ''}`
+    + (connType(tgt.value.connId) === 'postgres' ? '<br>Всё выполнится в одной транзакции и откатится при ошибке.' : '<br>Oracle: фиксация пачками по 1000 операторов.'), 'Синхронизация данных'))) return;
+  const diffTables = result.value.tables.filter(t => t.status === 'different').map(t => t.table);
+  const tablesSpec = (lastParams.value.tables && lastParams.value.tables.length ? lastParams.value.tables : diffTables.map(t => ({ source: t })))
+    .filter(t => diffTables.includes(t.source));
+  syncResult.value = null;
+  const j = await safe(() => api.post('/jobs/data-sync', { ...lastParams.value, tables: tablesSpec, ...syncOpt }));
+  if (j) syncJobId.value = j.id;
 }
 function onUpdate(j) { if (j.result && j.status === 'running') result.value = j.result.tables ? { summary: j.result.summary, tables: j.result.tables } : null; }
 function onDone(j) { if (j.result) result.value = j.result; }
@@ -181,6 +239,7 @@ watch(() => route.query.job, async id => {
   const j = await safe(() => api.get(`/jobs/${id}?full=1`));
   if (j && j.type === 'data-compare') {
     jobId.value = id;
+    lastParams.value = j.params;
     src.value = { connId: j.params.sourceId, schema: j.params.sourceSchema };
     tgt.value = { connId: j.params.targetId, schema: j.params.targetSchema };
   }
