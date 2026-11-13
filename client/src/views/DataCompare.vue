@@ -52,6 +52,7 @@
       </div>
       <div class="toolbar">
         <DxButton text="Сравнить данные" icon="runner" type="default" :disabled="!ready" @click="run" />
+        <AddToSuite type="data-compare" :params="suiteParams" default-title="Данные" />
         <span class="hint">Строки сопоставляются по первичному ключу потоковым merge-join (как в pgCompare/reladiff), значения нормализуются: числа, даты (UTC, микросекунды), CHAR, NULL/'' , JSON, бинарные данные. Таблицы без ключа сравниваются как наборы строк. Допуск: числа считаются равными, если |a−b| ≤ абсолютного допуска или ≤ относительного × max(|a|,|b|) — полезно для расчётных таблиц (округления Oracle и PostgreSQL).</span>
       </div>
     </div>
@@ -144,6 +145,7 @@ import { DxTagBox } from 'devextreme-vue/tag-box';
 import { DxDataGrid, DxColumn, DxSelection, DxEditing, DxSearchPanel, DxScrolling, DxFilterRow, DxMasterDetail, DxPaging } from 'devextreme-vue/data-grid';
 import DbPicker from '../components/DbPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
+import AddToSuite from '../components/AddToSuite.vue';
 import { api, safe, toast, STATUS, fmtMs, fmtNum, fmtSize } from '../api';
 import { relatedKeys } from '../related';
 import { confirm } from 'devextreme/ui/dialog';
@@ -201,6 +203,16 @@ async function run() {
   syncJobId.value = null; syncResult.value = null;
   const j = await safe(() => api.post('/jobs/data-compare', params));
   if (j) { jobId.value = j.id; lastParams.value = params; }
+}
+
+function suiteParams() {
+  if (!ready.value) return null;
+  const pick = selected.value.length ? tables.value.filter(t => selected.value.includes(t.source)) : tables.value;
+  return {
+    sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema,
+    tables: pick.map(t => ({ source: t.source, target: t.target, keyColumns: t.keyColumns ? t.keyColumns.split(',').map(x => x.trim()) : undefined, sourceWhere: t.sourceWhere || undefined, targetWhere: t.targetWhere || undefined })),
+    ...opts, emptyAsNull: opts.emptyAsNull ?? undefined,
+  };
 }
 
 async function addRelated() {

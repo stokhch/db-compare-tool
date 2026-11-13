@@ -3,9 +3,14 @@
     <nav class="sidebar">
       <div class="logo">DB Compare<small>Oracle ⇄ PostgreSQL</small></div>
       <router-link to="/connections">🔌 Подключения</router-link>
+      <router-link to="/profile">📊 Профиль данных</router-link>
       <router-link to="/schema">🧩 Сравнение схем</router-link>
       <router-link to="/data">🔍 Сравнение данных</router-link>
+      <router-link to="/checks">✅ Проверки</router-link>
+      <router-link to="/migrate">🚚 Миграция</router-link>
       <router-link to="/copy">📦 Копирование</router-link>
+      <router-link to="/code">🧑‍💻 Код приложения</router-link>
+      <router-link to="/suites">⏰ Регламент</router-link>
       <router-link to="/jobs">🕘 Задачи <span v-if="runningJobs" class="badge">{{ runningJobs }}</span></router-link>
       <router-link to="/settings">⚙️ Настройки</router-link>
     </nav>

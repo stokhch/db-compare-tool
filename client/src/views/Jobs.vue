@@ -18,7 +18,7 @@
         <template #act="{ data }">
           <span style="display:inline-flex;gap:10px">
             <a v-if="isCompare(data.data)" href="#" @click.prevent.stop="openResult(data.data)">открыть</a>
-            <a v-if="isCompare(data.data)" :href="`/api/jobs/${data.data.id}/report.html`" target="_blank">отчёт</a>
+            <a v-if="data.data.type === 'schema-compare' || data.data.type === 'data-compare'" :href="`/api/jobs/${data.data.id}/report.html`" target="_blank">отчёт</a>
             <a v-if="data.data.status !== 'running'" href="#" @click.prevent.stop="remove(data.data)">удалить</a>
           </span>
         </template>
@@ -39,8 +39,9 @@ import { api, safe, STATUS, fmtMs, fmtNum } from '../api';
 const router = useRouter();
 const jobs = ref([]);
 const openId = ref(null);
-const TYPES = { 'schema-compare': 'Схемы', 'data-compare': 'Данные', transfer: 'Перелив', pgdump: 'pg_dump', datapump: 'Data Pump', ora2pg: 'ora2pg' };
-const isCompare = j => j.type === 'schema-compare' || j.type === 'data-compare';
+const TYPES = { 'schema-compare': 'Схемы', 'data-compare': 'Данные', transfer: 'Перелив', pgdump: 'pg_dump', datapump: 'Data Pump', ora2pg: 'ora2pg', 'data-sync': 'Синхр. данных', 'apply-sql': 'Скрипт', profile: 'Профиль', pipeline: 'Миграция', delta: 'Догрузка', extras: 'Окружение', codescan: 'Код', 'query-compare': 'Запросы', 'calc-verify': 'Расчёты', 'agg-compare': 'Агрегаты', suite: 'Регламент' };
+const ROUTES = { 'schema-compare': '/schema', 'data-compare': '/data', profile: '/profile', pipeline: '/migrate', delta: '/migrate', extras: '/migrate', codescan: '/code', 'query-compare': '/checks', 'calc-verify': '/checks', 'agg-compare': '/checks' };
+const isCompare = j => !!ROUTES[j.type];
 const cls = { done: 'ok', error: 'error', cancelled: 'warning', running: 'warning' };
 
 function summaryText(r) {
@@ -53,12 +54,22 @@ function summaryText(r) {
     case 'datapump': return s.commandsOnly ? 'команды' : `${s.state}, ошибок ${s.errors}`;
     case 'ora2pg': return `${s.action}, файлов ${s.files}${s.problems != null ? `, проблем ${s.problems}` : ''}`;
     case 'pgdump': return `${s.file || ''}`;
+    case 'profile': return `колонок ${s.columns}: проблем ${s.error || 0}, предупреждений ${s.warning || 0}`;
+    case 'pipeline': return `шагов ${s.done + (s.warning || 0)}/${s.steps}, простой ≈ ${fmtMs(s.downtimeMs)}${s.error ? ', ОШИБКА' : ''}`;
+    case 'delta': return `вставка/обновление ${s.insert}, изменения ${s.update}${s.delete != null ? `, удаления ${s.delete}` : ''}`;
+    case 'codescan': return `файлов ${s.files}: менять ${s.error}, проверить ${s.warning}`;
+    case 'query-compare': return `запросов ${s.queries}: отличаются ${s.different}, ошибок ${s.error}, медленнее ${s.slow}`;
+    case 'calc-verify': case 'agg-compare': return `таблиц ${s.tables}: отличаются ${s.different}, ошибок ${s.error}`;
+    case 'data-sync': return `INSERT ${s.insert}, UPDATE ${s.update}, DELETE ${s.delete}${s.applied ? ' (выполнено)' : ''}`;
+    case 'apply-sql': return `выполнено ${s.done} из ${s.total}${s.error ? `, ошибок ${s.error}` : ''}`;
+    case 'suite': return `${{ ok: 'всё совпадает', warn: 'предупреждения', fail: 'расхождения' }[s.status]}, проверок ${s.checks}`;
+    case 'extras': return Object.entries(s).map(([k, v]) => `${k}: ${v}`).join(', ');
     default: return '';
   }
 }
 async function load() { const r = await safe(() => api.get('/jobs')); if (r) jobs.value = r; }
 async function remove(j) { await safe(() => api.del(`/jobs/${j.id}`)); if (openId.value === j.id) openId.value = null; load(); }
-function openResult(j) { router.push({ path: j.type === 'schema-compare' ? '/schema' : '/data', query: { job: j.id } }); }
+function openResult(j) { router.push({ path: ROUTES[j.type], query: { job: j.id } }); }
 onMounted(load);
 onActivated(load);
 </script>

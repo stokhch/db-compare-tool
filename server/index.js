@@ -8,23 +8,11 @@ const { withDb } = require('./db');
 const { listTables } = require('./meta');
 const { listObjects } = require('./meta/objects');
 const { renderScript } = require('./compare/syncschema');
-const { runApplySql } = require('./copy/applysql');
-const { runDataSync, SYNC_DIR } = require('./compare/syncdata');
-const { runProfile } = require('./migrate/profile');
-const { runPipeline } = require('./migrate/pipeline');
-const { runAggCompare } = require('./verify/aggregates');
-const { runDelta } = require('./migrate/delta');
-const { runExtras } = require('./migrate/extras');
-const { runCodeScan } = require('./migrate/codescan');
-const { runQueryCompare, topSql } = require('./verify/queries');
-const { runCalcVerify } = require('./verify/calc');
+const { SYNC_DIR } = require('./compare/syncdata');
+const { topSql } = require('./verify/queries');
 const { renderReport } = require('./lib/report');
-const { runSchemaCompare } = require('./compare/schema');
-const { runDataCompare } = require('./compare/data');
-const { runTransfer } = require('./copy/transfer');
-const { runPgDump, listDumps, DUMPS } = require('./copy/pgdump');
-const { runDataPump } = require('./copy/datapump');
-const { runOra2pg, ACTIONS } = require('./copy/ora2pg');
+const { listDumps, DUMPS } = require('./copy/pgdump');
+const { ACTIONS } = require('./copy/ora2pg');
 const { pgTool, toolVersion, ora2pgCmd, perlModule, findPgBin } = require('./lib/proc');
 const { explain } = require('./lib/errhint');
 
@@ -55,8 +43,8 @@ app.get('/api/connections/:id/topsql', h(req => withDb(req.params.id, db => topS
 app.get('/api/connections/:id/tables', h(req => withDb(req.params.id, db => listTables(db, req.query.schema || db.defaultSchema))));
 
 // ---------- Настройки и утилиты ----------
-app.get('/api/settings', h(() => ({ ...store.getSettings(), detectedPgBin: findPgBin() })));
-app.put('/api/settings', h(req => { const { detectedPgBin, ...s } = req.body; return store.saveSettings(s); }));
+app.get('/api/settings', h(() => ({ ...store.getSettings(), detectedPgBin: findPgBin(), appDir: path.join(__dirname, '..') })));
+app.put('/api/settings', h(req => { const { detectedPgBin, appDir, ...s } = req.body; return store.saveSettings(s); }));
 app.get('/api/tools', h(async () => {
   const o = ora2pgCmd();
   const [pgDump, pgRestore, ora2pg, dbdOracle, dbdPg] = await Promise.all([
@@ -71,24 +59,23 @@ app.get('/api/tools', h(async () => {
 }));
 
 // ---------- Задачи ----------
-const JOB_TYPES = {
-  'schema-compare': { title: p => `Схемы: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runSchemaCompare },
-  'data-compare': { title: p => `Данные: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runDataCompare },
-  transfer: { title: p => `Перелив: ${p.sourceSchema} → ${p.targetSchema}`, run: runTransfer },
-  pgdump: { title: p => `pg_dump/pg_restore (${p.mode || 'dump_restore'})`, run: runPgDump },
-  datapump: { title: p => `Data Pump: ${p.sourceSchema} → ${p.targetSchema || p.sourceSchema}`, run: runDataPump },
-  ora2pg: { title: p => `ora2pg ${p.action}: ${p.sourceSchema}`, run: runOra2pg },
-  'data-sync': { title: p => `Синхронизация данных: ${p.sourceSchema} → ${p.targetSchema}${p.apply ? ' (с выполнением)' : ''}`, run: runDataSync },
-  profile: { title: p => `Профиль данных: ${p.sourceSchema}`, run: runProfile },
-  pipeline: { title: p => `Миграция: ${p.sourceSchema} → ${p.targetSchema}${p.resumeJobId ? ' (продолжение)' : ''}`, run: runPipeline },
-  'agg-compare': { title: p => `Агрегаты: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runAggCompare },
-  delta: { title: p => `Догрузка изменений: ${p.sourceSchema} → ${p.targetSchema}${p.apply ? ' (с выполнением)' : ''}`, run: runDelta },
-  extras: { title: p => `Права и окружение: ${p.sourceSchema}`, run: runExtras },
-  codescan: { title: p => `Проверка кода: ${p.path}`, run: runCodeScan },
-  'query-compare': { title: p => `Запросы: ${(p.queries || []).length}${p.includeViews ? ' + представления' : ''}`, run: runQueryCompare },
-  'calc-verify': { title: p => `Сверка расчётов: ${(p.tables || []).length} таблиц`, run: runCalcVerify },
-  'apply-sql': { title: p => `Выполнение скрипта: ${(p.statements || []).length} операторов`, run: runApplySql },
-};
+const { JOB_TYPES } = require('./jobtypes');
+const suites = require('./verify/suites');
+app.get('/api/saved/:kind', h(req => suites.list(req.params.kind)));
+app.post('/api/saved/:kind', h(req => {
+  if (req.params.kind === 'suites' && req.body.schedule && !suites.validCron(req.body.schedule)) throw new Error('Неверное расписание. Формат cron: минута час день месяц день_недели, например «0 7 * * 1-5»');
+  return suites.save(req.params.kind, req.body);
+}));
+app.delete('/api/saved/:kind/:id', h(req => { suites.remove(req.params.kind, req.params.id); return { ok: true }; }));
+app.get('/api/suites/:id/runs', h(req => suites.runs(req.params.id)));
+// Добавить проверку в набор (кнопка «В регламент» на экранах сравнения)
+app.post('/api/suites/:id/checks', h(req => {
+  const s = suites.get('suites', req.params.id);
+  if (!s) throw new Error('Набор не найден');
+  const check = { id: require('crypto').randomUUID(), enabled: true, ...req.body };
+  return suites.save('suites', { ...s, checks: [...(s.checks || []), check] });
+}));
+
 app.post('/api/jobs/:type', h(req => {
   const t = JOB_TYPES[req.params.type];
   if (!t) throw new Error('Неизвестный тип задачи');
@@ -153,6 +140,8 @@ if (fs.existsSync(dist)) {
 
 const PORT = Number(process.env.PORT) || 3700;
 const HOST = process.env.HOST || '127.0.0.1';
+suites.startScheduler((type, p) => jobs.createJob(type, JOB_TYPES[type].title(p), p, ctx => JOB_TYPES[type].run(p, ctx)));
+
 app.listen(PORT, HOST, () => {
   console.log(`DB Compare Tool: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   console.log(`Данные: ${store.DATA_DIR}`);

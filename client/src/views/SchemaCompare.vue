@@ -31,6 +31,7 @@
       </div>
       <div class="toolbar">
         <DxButton text="Сравнить" icon="runner" type="default" :disabled="!ready || (scope === 'selected' && !objects.length)" @click="run" />
+        <AddToSuite type="schema-compare" :params="suiteParams" default-title="Структура" />
         <span class="hint">Oracle ⇄ PostgreSQL: имена сопоставляются без учёта регистра, типы проверяются на совместимость (NUMBER → bigint/numeric, VARCHAR2 → varchar, DATE → timestamp…). Функции пакетов ищутся как <span class="mono">пакет_функция</span> (так их называет plsql2pg) или <span class="mono">пакет.функция</span> (ora2pg с PACKAGE_AS_SCHEMA).
           Код PL/pgSQL проверяется расширением plpgsql_check в транзакции с откатом — база не меняется (аналог INVALID-объектов Oracle).</span>
       </div>
@@ -103,6 +104,7 @@ import DbPicker from '../components/DbPicker.vue';
 import JobPanel from '../components/JobPanel.vue';
 import ObjectPicker from '../components/ObjectPicker.vue';
 import SchemaSyncPanel from '../components/SchemaSyncPanel.vue';
+import AddToSuite from '../components/AddToSuite.vue';
 import { toast } from '../api';
 import { api, safe, STATUS } from '../api';
 import { lastPick, rememberPick } from '../store';
@@ -136,6 +138,7 @@ async function run() {
   }));
   if (j) jobId.value = j.id;
 }
+const suiteParams = () => (ready.value ? { sourceId: src.value.connId, sourceSchema: src.value.schema, targetId: tgt.value.connId, targetSchema: tgt.value.schema, ...opts, buildSync: false, objects: scope.value === 'selected' ? objects.value : undefined } : null);
 function onDone(j) { if (j.result) result.value = j.result; }
 function onApplied(j) {
   if (j.status === 'done') toast('Скрипт выполнен. Запустите сравнение ещё раз, чтобы проверить результат.');

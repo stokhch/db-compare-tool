@@ -17,8 +17,13 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/connections' },
     { path: '/connections', component: () => import('./views/Connections.vue'), meta: { title: 'Подключения' } },
+    { path: '/profile', component: () => import('./views/Profile.vue'), meta: { title: 'Профиль данных' } },
     { path: '/schema', component: () => import('./views/SchemaCompare.vue'), meta: { title: 'Сравнение схем' } },
     { path: '/data', component: () => import('./views/DataCompare.vue'), meta: { title: 'Сравнение данных' } },
+    { path: '/checks', component: () => import('./views/Checks.vue'), meta: { title: 'Проверки' } },
+    { path: '/migrate', component: () => import('./views/Migration.vue'), meta: { title: 'Миграция' } },
+    { path: '/code', component: () => import('./views/CodeScan.vue'), meta: { title: 'Код приложения' } },
+    { path: '/suites', component: () => import('./views/Suites.vue'), meta: { title: 'Регламент' } },
     { path: '/copy', component: () => import('./views/Copy.vue'), meta: { title: 'Копирование' } },
     { path: '/jobs', component: () => import('./views/Jobs.vue'), meta: { title: 'Задачи' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: 'Настройки' } },

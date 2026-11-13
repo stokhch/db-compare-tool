@@ -149,7 +149,7 @@ function scanSql(sql, baseIdx, fileText, add, ctxInfo) {
   }
   if (binds.length) {
     const order = [...new Set(binds.map(b => b.name))];
-    add({ id: 'binds', sev: 'error', title: `Параметры :${binds[0].name}${binds.length > 1 ? ' …' : ''}`, hint: `node-postgres использует $1, $2… по позиции: ${order.map((nm, i) => `:${nm} → $${i + 1}`).join(', ')}. Объект параметров { name: … } замените массивом [${order.join(', ')}]` },
+    add({ id: 'binds', sev: 'error', title: 'Параметры :имя / :1', hint: `node-postgres использует $1, $2… по позиции: ${order.map((nm, i) => `:${nm} → $${i + 1}`).join(', ')}. Объект параметров { name: … } замените массивом [${order.join(', ')}]` },
       baseIdx + binds[0].idx, binds.map(b => ':' + b.name).join(' '), null);
   }
   // Вызовы пакетов Oracle (если известны имена пакетов)

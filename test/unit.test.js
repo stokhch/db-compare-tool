@@ -191,3 +191,16 @@ console.log('OK: окружение Oracle и профиль данных');
   assert(res.find(x => x.rule === 'binds' && x.line === 3).hint.includes(':id → $1'));
   console.log('OK: сканер кода');
 }
+
+// --- расписание регламента ---
+{
+  const { cronMatches, validCron } = require('../server/verify/suites');
+  const d = new Date(2026, 10, 16, 7, 30); // понедельник 07:30
+  assert(cronMatches('30 7 * * 1-5', d));
+  assert(cronMatches('*/15 * * * *', d));
+  assert(!cronMatches('0 7 * * *', d));
+  assert(!cronMatches('30 7 * * 0,6', d));
+  assert(cronMatches('30 7 16 11 *', d));
+  assert(validCron('0 7 * * 1-5') && !validCron('каждый день'));
+  console.log('OK: расписание регламента');
+}
