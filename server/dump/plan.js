@@ -140,6 +140,29 @@ function analyzeIssues(a) {
     add({ id: 'external', level: 'warning', title: `Ссылки на схемы, которых нет ни в дампе, ни в базе: ${extMissing.map(r => r.schema).join(', ')}`,
       details: 'Синонимы, внешние ключи, права и код, использующие эти схемы, будут с ошибками (INVALID) до импорта этих схем.', list: extMissing.flatMap(r => r.samples) });
 
+  // --- зависимости кода (пакеты, процедуры, триггеры, представления) от объектов вне дампа
+  if (a.codeDeps) {
+    const cd = a.codeDeps;
+    const schemasMissing = cd.missing.filter(x => x.kind === 'schema'), objMissing = cd.missing.filter(x => x.kind === 'object');
+    if (cd.missing.length) {
+      const users = new Set(cd.missing.flatMap(x => x.usedBy));
+      add({ id: 'code-deps', level: 'warning', title: `Код ссылается на то, чего нет ни в дампе, ни в базе: ${cd.missing.length} (затронуто объектов: ${users.size})`,
+        details: [
+          schemasMissing.length ? `Схемы, пакеты или синонимы: ${schemasMissing.map(x => x.ref).join(', ')}.` : '',
+          objMissing.length ? `Объекты в существующих схемах: ${objMissing.slice(0, 15).map(x => x.ref).join(', ')}${objMissing.length > 15 ? '…' : ''}.` : '',
+          'Эти пакеты, процедуры и представления после импорта будут невалидными (ORA-04063, PLS-00201). Импортируйте недостающие схемы (их дамп) раньше этого, создайте синонимы на объекты с другими именами или поправьте код после импорта.',
+        ].filter(Boolean).join(' '),
+        list: cd.missing.map(x => `${x.ref} — ${x.reason}${x.examples && x.examples.length ? ` (например, ${x.examples.join(', ')})` : ''}; используется в: ${x.usedBy.slice(0, 8).join(', ')}${x.usedBy.length > 8 ? ` и ещё ${x.usedBy.length - 8}` : ''}`),
+        fixes: [] });
+    }
+    if (cd.dblinks.length)
+      add({ id: 'code-dblinks', level: 'warning', title: `Код обращается к DB links, которых нет ни в дампе, ни в базе: ${cd.dblinks.map(x => x.link).join(', ')}`,
+        details: 'Объекты с такими обращениями будут невалидными, пока DB link не создан (CREATE DATABASE LINK … USING …). Если копия не должна ходить в рабочие базы — это ожидаемо.',
+        list: cd.dblinks.map(x => `${x.link}: ${x.usedBy.join(', ')}`), fixes: [] });
+    if (!cd.missing.length && !cd.dblinks.length && cd.checked)
+      add({ id: 'code-deps', level: 'info', title: `Зависимости кода в порядке: проверено ссылок на другие схемы и объекты — ${cd.checked}`, details: 'Всё, на что ссылается код из дампа, есть в самом дампе или в базе-приёмнике.', fixes: [] });
+  }
+
   // --- DB links, задания, каталоги
   if (c.dbLinks.length)
     add({ id: 'dblinks', level: 'warning', title: `DB links в дампе: ${c.dbLinks.map(l => l.name).join(', ')}`,

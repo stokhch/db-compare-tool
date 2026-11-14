@@ -340,6 +340,15 @@ async function runDumpAnalyze(p, ctx) {
       if (contents) { t = await targetState(db, contents.schemas.map(s => s.name), null); t.directories = result.target.directories; result.target = t; }
     }
     result.contents = contents;
+    // зависимости кода от схем, объектов и DB links вне дампа
+    if (contents && contents.codeRefs && contents.codeRefs.length) {
+      ctx.progress(0, 0, 'Проверка зависимостей кода…');
+      try {
+        const { resolveInOracle } = require('./codedeps');
+        result.codeDeps = await resolveInOracle(db, contents, result.target);
+        ctx.log(`Зависимости кода: проверено ссылок ${result.codeDeps.checked}, не найдено ${result.codeDeps.missing.length}, DB links вне дампа и базы: ${result.codeDeps.dblinks.length}`, result.codeDeps.missing.length ? 'warning' : 'info');
+      } catch (e) { ctx.log(`Зависимости кода не проверены: ${e.message}`, 'warning'); }
+    }
     result.encryptionPassword = p.encryptionPassword || '';
     const an = analyzeIssues(result);
     if (result.versionError) an.issues.unshift({ id: 'version', level: 'error', blocking: true, title: 'Дамп сделан более новой версией Oracle', details: `${result.versionError}. Нужен повторный экспорт с VERSION=${(t.version || '').split('.')[0]}.`, fixes: [] });

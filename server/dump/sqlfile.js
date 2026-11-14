@@ -38,6 +38,8 @@ function parseDdl(text, opts = {}) {
   };
   const tsCreated = [], rolesCreated = new Set(), rolesUsed = new Set(), grantees = new Set(), dbLinks = [], directories = [];
   const byteColumns = [], external = new Map(), typePaths = {};
+  const objectNames = {}, codeRefs = [];
+  const { extractRefs, CODE_TYPES } = require('./codedeps');
   let jobs = 0, lobs = 0, statements = 0, current = opts.defaultSchema ? opts.defaultSchema.toUpperCase() : null;
   const addExternal = (owner, what) => {
     if (!owner || SYSTEM_SCHEMAS.has(owner)) return;
@@ -103,6 +105,12 @@ function parseDdl(text, opts = {}) {
       if (owner && owner !== 'PUBLIC') {
         const s = S(owner);
         s.objects[type] = (s.objects[type] || 0) + 1; s.total++;
+        (objectNames[owner] = objectNames[owner] || new Set()).add(name);
+      }
+      // зависимости кода: ссылки на другие схемы, пакеты, таблицы, DB links
+      if (CODE_TYPES.has(type) && owner && owner !== 'PUBLIC') {
+        const refs = extractRefs(sql);
+        if (refs.length) codeRefs.push({ owner, object: name, type, refs });
       }
       if (type === 'TABLE' || type === 'INDEX' || type === 'MATERIALIZED VIEW' || type === 'CLUSTER') {
         const re = /\bTABLESPACE\s+"?([A-Za-z0-9_$#]+)"?/gi; let t;
@@ -158,6 +166,7 @@ function parseDdl(text, opts = {}) {
     rolesUsed: [...rolesUsed].filter(r => !BUILTIN_ROLES.has(r)),
     grantees: [...grantees].filter(r => !BUILTIN_ROLES.has(r) && !SYSTEM_SCHEMAS.has(r)),
     externalRefs, dbLinks, directories, byteColumns, typePaths, jobs, lobTables: lobs, statements,
+    objectNames: Object.fromEntries(Object.entries(objectNames).map(([o, set]) => [o, [...set]])), codeRefs,
   };
 }
 

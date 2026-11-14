@@ -513,3 +513,31 @@ END`);
   assert.strictEqual(structureHash({ ...meta, views: [], mviews: [], sequences: [], routines: [], triggers: [] }), structureHash({ ...meta, views: [], mviews: [], sequences: [], routines: [], triggers: [], tables: meta.tables.map(t => ({ ...t, rowEstimate: 999 })) }), 'хеш не зависит от числа строк');
   console.log('OK: сервисные функции');
 }
+
+// --- зависимости кода в дампе ---
+{
+  const { extractRefs, classify } = require('../server/dump/codedeps');
+  const { parseDdl } = require('../server/dump/sqlfile');
+  const { analyzeIssues } = require('../server/dump/plan');
+  const refs = extractRefs(`CREATE OR REPLACE PACKAGE BODY "SCOTT"."PKG2" AS
+    PROCEDURE p IS v hr.employees%ROWTYPE; BEGIN
+      fin.calc_pkg.run(1); -- comment util.x(1)
+      SELECT 1 INTO v.x FROM hr.jobs j JOIN reports r ON 1=1; INSERT INTO t@prodlink VALUES (1);
+      DBMS_OUTPUT.PUT_LINE('fin.fake(1)'); END; END;`);
+  const keys = refs.map(r => [r.a, r.b, r.link].filter(Boolean).join('.'));
+  assert(keys.includes('FIN.CALC_PKG') && keys.includes('HR.JOBS') && keys.includes('HR.EMPLOYEES'), keys.join(','));
+  assert(!keys.some(k => /^UTIL|FAKE|^V\./.test(k)), 'комментарии, строки и поля записей не считаются: ' + keys);
+  assert(refs.some(r => r.link === 'PRODLINK'));
+  const c = parseDdl(`CREATE USER "SCOTT" IDENTIFIED BY VALUES 'x';
+CREATE TABLE "SCOTT"."T" ("ID" NUMBER);
+CREATE OR REPLACE PACKAGE BODY "SCOTT"."PKG2" AS PROCEDURE p IS BEGIN fin.calc_pkg.run(1); hr.jobs_api.go; INSERT INTO hr.employees VALUES (1); INSERT INTO t VALUES (1); END; END;
+/`);
+  assert(c.codeRefs.length >= 1 && c.objectNames.SCOTT.includes('T'));
+  const cd = classify(c, { users: new Set(['HR']), objects: new Map([['HR', new Set(['EMPLOYEES'])]]), named: new Set(), dbLinks: new Set() });
+  const miss = cd.missing.map(x => x.ref);
+  assert(miss.includes('FIN') && miss.includes('HR.JOBS_API') && !miss.includes('HR.EMPLOYEES') && !miss.includes('SCOTT.T'), miss.join(','));
+  const an = analyzeIssues({ format: 'datapump', header: {}, dumpInfo: {}, contents: c, codeDeps: cd, target: { privs: { dba: true }, users: {}, tablespaces: [], allUsers: ['HR'] }, directory: { visible: true } });
+  const iss = an.issues.find(i => i.id === 'code-deps');
+  assert(iss && iss.level === 'warning' && iss.list.some(l => l.startsWith('FIN')), 'проблема code-deps');
+  console.log('OK: зависимости кода в дампе');
+}
