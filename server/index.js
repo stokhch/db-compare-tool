@@ -139,6 +139,12 @@ app.get('/api/connections/:id/columns', h(async req => {
   try { const m = await loadMeta(db, req.query.schema, {}, null); return [...m.tables.map(t => ({ name: t.name, kind: 'table', columns: t.columns.map(c => ({ name: c.name, type: c.type })) })), ...m.views.map(v => ({ name: v.name, kind: 'view', columns: (v.columns || []).map(c => ({ name: c.name || c, type: c.type || '' })) }))]; }
   finally { await db.close(); }
 }));
+// браузер объектов
+const objTools = require('./tools/objects');
+app.get('/api/connections/:id/object', h(req => objTools.objectDetails(req.params.id, req.query.schema, req.query.type, req.query.name)));
+app.post('/api/connections/:id/table-data', h(req => objTools.tableData(req.params.id, req.body.schema, req.body.table, req.body)));
+app.post('/api/connections/:id/table-save', h(req => objTools.saveRows(req.params.id, req.body.schema, req.body.table, req.body.changes || [])));
+app.post('/api/connections/:id/object-action', h(req => objTools.objectAction(req.params.id, req.body.schema, req.body.type, req.body.name, req.body.action)));
 app.get('/api/snapshots', h(req => snapshots.list(req.query.connId, req.query.schema)));
 app.delete('/api/snapshots/:id', h(req => { snapshots.remove(req.params.id); return { ok: true }; }));
 app.get('/api/ddl-journal/sql', h(req => ({ sql: snapshots.ddlJournalSql(req.query.type, req.query.schema) })));

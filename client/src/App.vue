@@ -13,6 +13,7 @@
       <router-link to="/dump">🗄️ Импорт дампа</router-link>
       <router-link to="/code">🧑‍💻 Код приложения</router-link>
       <div class="navgroup">Работа с базой</div>
+      <router-link to="/objects">🗂️ Браузер объектов</router-link>
       <router-link to="/sql">⌨️ SQL-консоль</router-link>
       <router-link to="/perf">⚡ Производительность</router-link>
       <router-link to="/health">🩺 Аудит здоровья</router-link>

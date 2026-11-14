@@ -26,6 +26,7 @@ const router = createRouter({
     { path: '/suites', component: () => import('./views/Suites.vue'), meta: { title: 'Регламент' } },
     { path: '/dump', component: () => import('./views/DumpImport.vue'), meta: { title: 'Импорт дампа' } },
     { path: '/copy', component: () => import('./views/Copy.vue'), meta: { title: 'Копирование' } },
+    { path: '/objects', component: () => import('./views/ObjectBrowser.vue'), meta: { title: 'Браузер объектов' } },
     { path: '/sql', component: () => import('./views/SqlConsole.vue'), meta: { title: 'SQL-консоль' } },
     { path: '/perf', component: () => import('./views/Perf.vue'), meta: { title: 'Производительность' } },
     { path: '/health', component: () => import('./views/Health.vue'), meta: { title: 'Аудит здоровья' } },
