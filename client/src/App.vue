@@ -26,6 +26,7 @@
       <router-link to="/suites">⏰ Регламент</router-link>
       <router-link to="/jobs">🕘 Задачи <span v-if="runningJobs" class="badge">{{ runningJobs }}</span></router-link>
       <router-link to="/settings">⚙️ Настройки</router-link>
+      <a href="/guide" target="_blank">📖 Инструкция</a>
     </nav>
     <main class="content">
       <router-view v-slot="{ Component }">

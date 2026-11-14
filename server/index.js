@@ -170,6 +170,8 @@ app.get('/api/docs/:file', (req, res) => {
   if (f.endsWith('.md')) res.type('text/markdown; charset=utf-8').set('Content-Disposition', `attachment; filename="${path.basename(f)}"`);
   res.sendFile(f);
 });
+// инструкция пользователя (docs/guide.html)
+app.get('/guide', (req, res) => res.sendFile(path.join(__dirname, '..', 'docs', 'guide.html')));
 app.get('/api/backups', h(() => backups.list()));
 app.delete('/api/backups/:id', h(async req => { const b = backups.list().find(x => x.id === req.params.id); if (b) await backups.removeBackup(b); return { ok: true }; }));
 app.get('/api/backups/:id/download', (req, res) => {
