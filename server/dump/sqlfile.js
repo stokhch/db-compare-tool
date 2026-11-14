@@ -39,6 +39,10 @@ function parseDdl(text, opts = {}) {
   const tsCreated = [], rolesCreated = new Set(), rolesUsed = new Set(), grantees = new Set(), dbLinks = [], directories = [];
   const byteColumns = [], external = new Map(), typePaths = {};
   const objectNames = {}, codeRefs = [];
+  // объекты для выборочного импорта: id → { id, type, owner, name, tokens, on }
+  const objs = new Map(), fkRefs = [];
+  const SEL_TYPE = { 'TABLE': 'TABLE', 'VIEW': 'VIEW', 'SEQUENCE': 'SEQUENCE', 'SYNONYM': 'SYNONYM', 'PACKAGE': 'PACKAGE', 'PACKAGE BODY': 'PACKAGE',
+    'PROCEDURE': 'PROCEDURE', 'FUNCTION': 'FUNCTION', 'TYPE': 'TYPE', 'TYPE BODY': 'TYPE', 'MATERIALIZED VIEW': 'MATERIALIZED VIEW', 'TRIGGER': 'TRIGGER' };
   const { extractRefs, CODE_TYPES } = require('./codedeps');
   let jobs = 0, lobs = 0, statements = 0, current = opts.defaultSchema ? opts.defaultSchema.toUpperCase() : null;
   const addExternal = (owner, what) => {
@@ -107,6 +111,25 @@ function parseDdl(text, opts = {}) {
         s.objects[type] = (s.objects[type] || 0) + 1; s.total++;
         (objectNames[owner] = objectNames[owner] || new Set()).add(name);
       }
+      if (SEL_TYPE[type] && owner && owner !== 'PUBLIC') {
+        const st = SEL_TYPE[type], id = `${st}:${owner}.${name}`;
+        if (!objs.has(id)) objs.set(id, { id, type: st, owner, name, tokens: [], on: null });
+        const o = objs.get(id);
+        if (st === 'TABLE') {
+          const fre = /REFERENCES\s+("[^"]+"|[\w$#]+)(?:\s*\.\s*("[^"]+"|[\w$#]+))?/gi; let f;
+          while ((f = fre.exec(sql))) o.tokens.push(f[2] ? [unq(f[1]), unq(f[2])] : [null, unq(f[1])]);
+          o.typeTokens = nameTokens(sql);           // колонки объектных типов
+        } else if (st === 'SYNONYM') {
+          const fm = /\bFOR\s+("[^"]+"|[\w$#]+)(?:\s*\.\s*("[^"]+"|[\w$#]+))?(@\S+)?/i.exec(sql);
+          if (fm && !fm[3]) o.tokens.push(fm[2] ? [unq(fm[1]), unq(fm[2])] : [null, unq(fm[1])]);
+        } else {
+          if (st === 'TRIGGER') {
+            const om = /\bON\s+("[^"]+"|[\w$#]+)(?:\s*\.\s*("[^"]+"|[\w$#]+))?/i.exec(sql);
+            if (om) o.on = om[2] ? [unq(om[1]), unq(om[2])] : [owner, unq(om[1])];
+          }
+          o.tokens.push(...nameTokens(sql));
+        }
+      }
       // зависимости кода: ссылки на другие схемы, пакеты, таблицы, DB links
       if (CODE_TYPES.has(type) && owner && owner !== 'PUBLIC') {
         const refs = extractRefs(sql);
@@ -134,6 +157,13 @@ function parseDdl(text, opts = {}) {
       }
       continue;
     }
+    // внешние ключи: ALTER TABLE "O"."T" ADD CONSTRAINT … FOREIGN KEY … REFERENCES "O2"."T2"
+    const fk = /^\s*ALTER\s+TABLE\s+("[^"]+"|[\w$#]+)(?:\s*\.\s*("[^"]+"|[\w$#]+))?[\s\S]*?\bREFERENCES\s+("[^"]+"|[\w$#]+)(?:\s*\.\s*("[^"]+"|[\w$#]+))?/i.exec(sql);
+    if (fk) {
+      const from = fk[2] ? [unq(fk[1]), unq(fk[2])] : [cur, unq(fk[1])];
+      fkRefs.push({ from, to: fk[4] ? [unq(fk[3]), unq(fk[4])] : [from[0], unq(fk[3])] });
+      continue;
+    }
     // ALTER USER … QUOTA … ON ts / DEFAULT TABLESPACE
     const au = /^\s*ALTER\s+USER\s+"?([A-Za-z0-9_$#]+)"?([\s\S]*)/i.exec(sql);
     if (au) {
@@ -156,6 +186,8 @@ function parseDdl(text, opts = {}) {
   }
 
   const schemaNames = new Set(schemas.keys());
+  for (const { from, to } of fkRefs) { const o = objs.get(`TABLE:${from[0]}.${from[1]}`); if (o) o.tokens.push(to); }
+  const objects = resolveObjects(objs);
   const externalRefs = [...external].filter(([o]) => !schemaNames.has(o)).map(([schema, s]) => ({ schema, samples: [...s] }));
   const createdTs = new Set(tsCreated.map(t => t.name));
   return {
@@ -166,8 +198,43 @@ function parseDdl(text, opts = {}) {
     rolesUsed: [...rolesUsed].filter(r => !BUILTIN_ROLES.has(r)),
     grantees: [...grantees].filter(r => !BUILTIN_ROLES.has(r) && !SYSTEM_SCHEMAS.has(r)),
     externalRefs, dbLinks, directories, byteColumns, typePaths, jobs, lobTables: lobs, statements,
-    objectNames: Object.fromEntries(Object.entries(objectNames).map(([o, set]) => [o, [...set]])), codeRefs,
+    objectNames: Object.fromEntries(Object.entries(objectNames).map(([o, set]) => [o, [...set]])), codeRefs, objects,
   };
+}
+
+/** Идентификаторы и пары «схема.имя» из текста (без комментариев и строк). */
+function nameTokens(sql) {
+  const { cleanCode } = require('../compare/translation');
+  const code = cleanCode(sql);
+  const out = new Set(), res = [];
+  const re = /(?<![\w$#."])("[^"]+"|[A-Za-z][\w$#]*)(?:\s*\.\s*("[^"]+"|[A-Za-z][\w$#]*))?/g; let m;
+  while ((m = re.exec(code))) {
+    const a = unq(m[1]), b = m[2] ? unq(m[2]) : null;
+    const k = `${a}.${b || ''}`;
+    if (!out.has(k)) { out.add(k); res.push(b ? [a, b] : [null, a]); }
+  }
+  return res;
+}
+
+/** Зависимости между объектами дампа: токены → id объектов дампа. */
+function resolveObjects(objs) {
+  const byName = new Map();   // OWNER.NAME → id (пространство имён таблиц, представлений, кода, синонимов)
+  for (const o of objs.values()) if (o.type !== 'TRIGGER') { const k = `${o.owner}.${o.name}`; if (!byName.has(k)) byName.set(k, o.id); }
+  const out = [];
+  for (const o of objs.values()) {
+    const deps = new Set();
+    const look = (a, b) => {
+      if (a && b) { const id = byName.get(`${a}.${b}`) || byName.get(`${o.owner}.${a}`); if (id) return id; return null; } // схема.объект или пакет.подпрограмма / таблица.колонка
+      return byName.get(`${o.owner}.${b}`) || null;
+    };
+    for (const [a, b] of o.tokens) { const id = look(a, b); if (id && id !== o.id) deps.add(id); }
+    if (o.typeTokens) for (const [a, b] of o.typeTokens) { const id = look(a, b); if (id && id.startsWith('TYPE:')) deps.add(id); }
+    if (o.on) { const id = byName.get(`${o.on[0]}.${o.on[1]}`); if (id) deps.add(id); }
+    const x = { id: o.id, type: o.type, owner: o.owner, name: o.name, deps: [...deps] };
+    if (o.type === 'TRIGGER' && o.on) x.on = byName.get(`${o.on[0]}.${o.on[1]}`) || null;
+    out.push(x);
+  }
+  return out;
 }
 
 module.exports = { parseDdl, SYSTEM_SCHEMAS, BUILTIN_ROLES };

@@ -193,6 +193,7 @@ app.post('/api/jobs/:id/retry', h(req => {
   return { type: j.type, ...r, preflight: !!preflight.PREFLIGHT[j.type] };
 }));
 app.post('/api/dump/plan', h(req => require('./dump/import').previewPlan(req.body)));
+app.post('/api/dump/select', h(req => require('./dump/import').selectObjects(req.body)));
 // Просмотр папок этого компьютера для выбора файла дампа (приложение работает локально)
 app.get('/api/fs/list', h(req => {
   const os = require('os');

@@ -47,6 +47,49 @@
         <div v-if="an.contents && an.contents.schemas.length" class="hint">Отметьте схемы для импорта (по умолчанию — все).</div>
       </div>
 
+      <!-- ===== Что импортировать ===== -->
+      <div v-if="an.contents && an.contents.objects" class="panel">
+        <h3 style="margin-top:0">Что импортировать</h3>
+        <DxRadioGroup :items="[{ id: 'all', t: 'Отмеченные схемы целиком' }, { id: 'pick', t: 'Только объекты по имени — с зависимостями, которых нет в базе' }]" value-expr="id" display-expr="t" v-model:value="sel.mode" layout="horizontal" />
+        <template v-if="sel.mode === 'pick'">
+          <div class="toolbar" style="margin-top:8px;align-items:flex-end">
+            <div class="field" style="width:220px;margin:0"><label>Имя объекта</label><DxTextBox v-model:value="sel.mask" placeholder="2026" value-change-event="input" @enter-key="pickObjects" /></div>
+            <div class="field" style="width:190px;margin:0"><label>Как сравнивать</label>
+              <DxSelectBox v-model:value="sel.how" :items="[{ id: 'contains', t: 'содержит' }, { id: 'like', t: 'маска (% и _)' }, { id: 'regex', t: 'регулярное выражение' }]" value-expr="id" display-expr="t" /></div>
+            <div class="field" style="width:320px;margin:0"><label>Типы (пусто — все)</label>
+              <DxTagBox v-model:value="sel.types" :items="typeItems" value-expr="id" display-expr="t" :show-selection-controls="true" :max-displayed-tags="3" /></div>
+            <DxButton text="Подобрать с зависимостями" icon="search" type="default" :disabled="!sel.mask" @click="pickObjects" />
+          </div>
+          <div class="hint">Ищутся объекты отмеченных схем. Зависимости — таблицы по внешним ключам, последовательности, пакеты, процедуры, функции, типы,
+            представления и таблицы, которые использует код, триггеры выбранных таблиц. Если зависимость уже есть в базе-приёмнике{{ an.noTarget ? ' (база не выбрана — проверка не выполняется)' : '' }}, она не импортируется.</div>
+          <template v-if="sel.res">
+            <div class="cards" style="margin-top:8px">
+              <div class="card"><div class="v">{{ sel.res.stats.matched }}</div><div class="l">подходят по имени</div></div>
+              <div class="card"><div class="v">{{ sel.res.stats.added }}</div><div class="l">добавлено зависимостей</div></div>
+              <div class="card"><div class="v ok">{{ sel.res.stats.existing }}</div><div class="l">зависимостей уже в базе</div></div>
+              <div class="card"><div class="v" :class="sel.res.outside.length ? 'warning' : 'ok'">{{ sel.res.outside.length }}</div><div class="l">нет ни в дампе, ни в базе</div></div>
+              <div class="card"><div class="v">{{ (dec.objects || []).length }}</div><div class="l">будет импортировано</div></div>
+            </div>
+            <div v-if="!sel.res.stats.matched" class="warning">Под фильтр не подходит ни один объект (всего в дампе {{ sel.res.total }}).</div>
+            <DxDataGrid v-else :data-source="sel.res.rows" key-expr="id" :show-borders="true" :height="Math.min(420, 60 + sel.res.rows.length * 34)" :word-wrap-enabled="true"
+              :selected-row-keys="dec.objects" @selection-changed="e => (dec.objects = e.selectedRowKeys)">
+              <DxSelection mode="multiple" show-check-boxes-mode="always" /><DxScrolling mode="virtual" /><DxSearchPanel :visible="true" />
+              <DxColumn data-field="owner" caption="Схема" :width="140" />
+              <DxColumn data-field="type" caption="Тип" :width="160" :calculate-display-value="r => TYPE_LABEL[r.type] || r.type" />
+              <DxColumn data-field="name" caption="Объект" />
+              <DxColumn caption="Почему" :calculate-cell-value="whyText" />
+            </DxDataGrid>
+            <details v-if="sel.res.existing.length" style="margin-top:6px"><summary>Зависимости, которые уже есть в базе и не импортируются ({{ sel.res.existing.length }})</summary>
+              <div class="mono" style="max-height:160px;overflow:auto">{{ sel.res.existing.map(x => `${x.owner}.${x.name} (${TYPE_LABEL[x.type] || x.type}) ← ${x.usedBy.map(short).join(', ')}`).join('\n') }}</div></details>
+            <div v-if="sel.res.outside.length || sel.res.dblinks.length" class="issue warning" style="margin-top:8px">
+              <div class="issue-title"><span class="dot">●</span> Выбранный код ссылается на то, чего нет ни в дампе, ни в базе</div>
+              <div class="issue-details">Эти объекты после импорта будут невалидными. Импортируйте недостающее из другого дампа или создайте вручную.</div>
+              <div class="mono" style="max-height:160px;overflow:auto">{{ [...sel.res.outside.map(x => `${x.ref} — ${x.reason}; используется в: ${x.usedBy.join(', ')}`), ...sel.res.dblinks.map(x => `DB link ${x.link}: ${x.usedBy.join(', ')}`)].join('\n') }}</div>
+            </div>
+          </template>
+        </template>
+      </div>
+
       <!-- ===== Проблемы и решения ===== -->
       <div class="panel">
         <h3 style="margin-top:0">Проблемы и решения <span class="hint">— ошибок {{ an.summary.errors }}, предупреждений {{ an.summary.warnings }}</span></h3>
@@ -99,7 +142,8 @@
             <div v-for="(j, k) in plan.jobs" :key="k" class="step"><span>{{ j.title }}</span>
               <pre v-if="j.between" class="cmd">{{ j.between.slice(0, 20).map(x => x.sql).join(';\n') }}{{ j.between.length > 20 ? `\n… ещё ${j.between.length - 20}` : '' }}</pre>
               <pre v-else class="cmd">{{ plan.commands[plan.jobs.filter(x => !x.between).indexOf(j)] }}</pre></div></div>
-          <div v-if="plan.imp"><b>{{ plan.pre.length ? 2 : 1 }}. imp</b><pre class="cmd">imp parfile: fromuser=({{ plan.imp.fromuser.join(',') }}) touser=({{ plan.imp.touser.join(',') }}) ignore=y grants=y indexes=y constraints=y commit=y; NLS_LANG=AMERICAN_AMERICA.{{ srcCharset || 'AL32UTF8' }}</pre></div>
+          <div v-if="plan.imp"><b>{{ plan.pre.length ? 2 : 1 }}. imp</b><pre class="cmd">imp parfile: fromuser=({{ plan.imp.fromuser.join(',') }}) touser=({{ plan.imp.touser.join(',') }}){{ plan.imp.tables ? ` tables=(${plan.imp.tables.join(',')})` : '' }} ignore=y grants=y indexes=y constraints=y commit=y; NLS_LANG=AMERICAN_AMERICA.{{ srcCharset || 'AL32UTF8' }}</pre></div>
+          <div v-for="n in plan.notes || []" :key="n" class="issue warning" style="margin-top:6px">{{ n }}</div>
           <div v-if="plan.post.length"><b>После импорта:</b> {{ plan.post.map(x => x.title).join('; ') }}, проверка невалидных объектов и количества объектов по типам.</div>
         </template>
         <div class="toolbar" style="margin-top:10px">
@@ -191,6 +235,7 @@ import { DxNumberBox } from 'devextreme-vue/number-box';
 import { DxSelectBox } from 'devextreme-vue/select-box';
 import { DxRadioGroup } from 'devextreme-vue/radio-group';
 import { DxPopup } from 'devextreme-vue/popup';
+import { DxTagBox } from 'devextreme-vue/tag-box';
 import { DxDataGrid, DxColumn, DxSelection, DxMasterDetail, DxSearchPanel, DxPaging, DxScrolling } from 'devextreme-vue/data-grid';
 import { confirm } from 'devextreme/ui/dialog';
 import ConnSelect from '../components/ConnSelect.vue';
@@ -204,6 +249,21 @@ const analyzeJob = ref(null), importJob = ref(null);
 const an = ref(null), res = ref(null), plan = ref(null);
 const dec = reactive({ schemas: {}, tablespaces: {}, selected: [] });
 const showBenign = ref(false);
+// выборочный импорт
+const TYPE_LABEL = { TABLE: 'таблица', VIEW: 'представление', SEQUENCE: 'последовательность', SYNONYM: 'синоним', PACKAGE: 'пакет', PROCEDURE: 'процедура', FUNCTION: 'функция', TYPE: 'тип', 'MATERIALIZED VIEW': 'мат. представление', TRIGGER: 'триггер' };
+const typeItems = Object.entries(TYPE_LABEL).map(([id, t]) => ({ id, t }));
+const sel = reactive({ mode: 'all', mask: '', how: 'contains', types: [], res: null });
+const short = id => id.replace(/^[^:]+:/, '');
+const whyText = r => (r.reason === 'mask' ? `подходит по имени${r.exists ? ' (уже есть в базе — см. действие для схемы)' : ''}` : r.reason === 'trigger' ? `триггер таблицы ${short(r.via)}` : `нужен для ${short(r.via)}`);
+watch(() => sel.mode, m => { if (m === 'all') dec.objects = []; else if (sel.res) dec.objects = sel.res.rows.map(r => r.id); });
+async function pickObjects() {
+  if (!sel.mask) return;
+  const schemas = dec.selected && dec.selected.length ? dec.selected : [];
+  const r = await safe(() => api.post('/dump/select', { analysisJobId: analyzeJob.value, targetId: form.targetId || undefined, decisions: JSON.parse(JSON.stringify({ ...dec, objects: [] })), filter: { mask: sel.mask, mode: sel.how, types: sel.types, schemas } }));
+  if (!r) return;
+  sel.res = r;
+  dec.objects = r.rows.map(x => x.id);
+}
 const FLAG = { byteToChar: 'byteToChar', createRoles: 'createRoles', excludeDbLinks: 'excludeDbLinks', excludeJobs: 'excludeJobs', excludeTablespaces: 'excludeTablespaces', dropStaleJobs: 'dropStaleJobs', copy: 'copy', decompress: 'decompress' };
 
 const fmtSize = b => (b == null ? '' : b > 1073741824 ? `${(b / 1073741824).toFixed(1)} ГБ` : b > 1048576 ? `${(b / 1048576).toFixed(1)} МБ` : `${Math.ceil(b / 1024)} КБ`);
@@ -230,7 +290,8 @@ function onAnalyzed(j) {
   an.value = j.result;
   const d = JSON.parse(JSON.stringify(j.result.defaults || {}));
   for (const k of Object.keys(dec)) delete dec[k];
-  Object.assign(dec, { schemas: {}, tablespaces: {}, selected: [], copy: true, ...d });
+  Object.assign(dec, { schemas: {}, tablespaces: {}, selected: [], objects: [], copy: true, ...d });
+  sel.res = null; sel.mode = 'all';
   if (pendingFixes) { Object.assign(dec, pendingFixes); pendingFixes = null; }
   if (j.result.file) form.file = j.result.file;
 }
@@ -255,7 +316,7 @@ async function startImport() {
     if (!ok) return;
   }
   res.value = null;
-  const j = await safe(() => api.post('/jobs/dump-import', { analysisJobId: analyzeJob.value, targetId: form.targetId, decisions: JSON.parse(JSON.stringify(dec)), encryptionPassword: form.encryptionPassword || undefined, title: (dec.selected || []).join(', ') }));
+  const j = await safe(() => api.post('/jobs/dump-import', { analysisJobId: analyzeJob.value, targetId: form.targetId, decisions: JSON.parse(JSON.stringify(dec)), encryptionPassword: form.encryptionPassword || undefined, title: dec.objects && dec.objects.length ? `${sel.mask}: объектов ${dec.objects.length}` : (dec.selected || []).join(', ') }));
   if (j) importJob.value = j.id;
 }
 let pendingFixes = null;

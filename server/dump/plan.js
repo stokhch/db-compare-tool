@@ -198,6 +198,8 @@ function unresolved(an, d) {
     if (i.blocking && !(i.id === 'file' && d.copy !== false && i.fixes.length) && !(i.id === 'password' && d.password)) out.push(i.title);
     if (i.needsDecision) {
       const s = d.schemas[i.schema];
+      // выборочный импорт в существующую схему — нормальный случай, решение не обязательно
+      if (d.objects && d.objects.length && (!s || !s.action || s.action === 'none')) continue;
       if (!s || !s.action || s.action === 'none') out.push(`${i.title} — выберите действие`);
       if (s && s.action === 'remap' && !s.target) out.push(`${i.schema}: укажите новое имя схемы`);
     }
@@ -214,7 +216,13 @@ function buildPlan(a, an, d) {
   const sep = t.sep || (/^[A-Za-z]:\\|\\/.test(t.datafileDir || '') ? '\\' : '/');
   const blocking = unresolved(an, d);
   const pre = [], post = [], between = [];
-  const selected = (d.selected && d.selected.length ? d.selected : c.schemas.map(s => s.name)).filter(n => (d.schemas[n] || {}).action !== 'skip');
+  // выборочный импорт: список id объектов (TYPE:OWNER.NAME)
+  const pickIds = d.objects && d.objects.length ? new Set(d.objects) : null;
+  const picked = pickIds ? (c.objects || []).filter(o => pickIds.has(o.id)) : null;
+  if (pickIds && !picked.length) blocking.push('Выбранных объектов нет в дампе — повторите отбор');
+  const selected = picked ? [...new Set(picked.map(o => o.owner))].filter(n => (d.schemas[n] || {}).action !== 'skip')
+    : (d.selected && d.selected.length ? d.selected : c.schemas.map(s => s.name)).filter(n => (d.schemas[n] || {}).action !== 'skip');
+  const notes = [];
   const tgtName = n => { const s = d.schemas[n] || {}; return s.action === 'remap' && s.target ? s.target.toUpperCase() : n; };
   const tsMap = n => { const x = d.tablespaces[n]; return x && x.action === 'remap' && x.to ? x.to : n; };
 
@@ -238,7 +246,7 @@ function buildPlan(a, an, d) {
     }
     const existsAfter = !!(t.users[tn] && t.users[tn].exists) && s.action !== 'drop';
     // Data Pump создаёт пользователя из дампа (и под новым именем); imp с touser — нет
-    const dumpCreates = info.createUser && (isDp || tn === n);
+    const dumpCreates = info.createUser && (isDp || tn === n) && !picked;   // при выборочном импорте CREATE USER из дампа не берётся
     const needCreate = !existsAfter && !dumpCreates;
     if (needCreate) {
       const pwd = s.password || randomPassword();
@@ -263,7 +271,14 @@ function buildPlan(a, an, d) {
     // imp: fromuser/touser, ignore=y если таблицы уже есть
     const pairs = selected.map(n => [n, tgtName(n)]);
     // ignore=y: пользователи создаются заранее, «уже существует» не должно останавливать импорт
-    return { blocking, pre, between, post, targetSchemas, imp: { fromuser: pairs.map(p => p[0]), touser: pairs.map(p => p[1]), ignore: true } };
+    let tables = null;
+    if (picked) {
+      tables = picked.filter(o => o.type === 'TABLE').map(o => o.name);
+      const other = picked.filter(o => o.type !== 'TABLE' && o.type !== 'TRIGGER');
+      if (other.length) notes.push(`Старый imp умеет выбирать только таблицы (с их индексами, ограничениями и триггерами). Не будут импортированы: ${other.slice(0, 10).map(o => `${o.owner}.${o.name}`).join(', ')}${other.length > 10 ? ` и ещё ${other.length - 10}` : ''}.`);
+      if (!tables.length) blocking.push('Для дампа exp можно выбрать только таблицы, а среди выбранных объектов их нет');
+    }
+    return { blocking, pre, between, post, targetSchemas, notes, imp: { fromuser: pairs.map(p => p[0]), touser: pairs.map(p => p[1]), ignore: true, ...(tables ? { tables } : {}) } };
   }
 
   // Data Pump: задания группируются по TABLE_EXISTS_ACTION
@@ -277,6 +292,23 @@ function buildPlan(a, an, d) {
   const remapTs = Object.entries(d.tablespaces).filter(([, x]) => x.action === 'remap' && x.to).map(([k, x]) => [k, x.to]);
   const allSchemas = c.schemas.map(s => s.name);
   const jobs = [];
+  if (picked) {
+    // по заданию на схему: INCLUDE по типам и именам; EXCLUDE вместе с INCLUDE Data Pump не допускает
+    const { includeFilter } = require('./select');
+    if (d.byteToChar && c.byteColumns.some(x => picked.some(o => o.type === 'TABLE' && o.owner === x.owner && o.name === x.table)))
+      notes.push('Перевод колонок BYTE → CHAR при выборочном импорте не выполняется. Если появятся ORA-12899, расширьте колонки после импорта структуры или импортируйте таблицы целиком по схеме.');
+    for (const n of selected) {
+      const rows = picked.filter(o => o.owner === n);
+      const inc = includeFilter(rows);
+      const tooLong = Object.entries(inc.names).find(([, l]) => l.reduce((s, x) => s + x.length + 3, 0) > 30000);
+      if (tooLong) blocking.push(`${n}: слишком много объектов типа ${tooLong[0]} (${tooLong[1].length}) для одного фильтра — сузьте отбор`);
+      const by = {}; for (const o of rows) by[o.type] = (by[o.type] || 0) + 1;
+      jobs.push({ schemas: [n], schemaExpr: `IN (${lit(n)})`, remapSchema: tgtName(n) !== n ? [[n, tgtName(n)]] : [], remapTablespace: remapTs,
+        tableExistsAction: teaOf(n), include: inc, exclude: [], oid: d.oidTransform && tgtName(n) !== n, password: d.password || null, parallel: d.parallel || 1,
+        title: `Импорт выбранных объектов ${n}${tgtName(n) !== n ? ` → ${tgtName(n)}` : ''}: ${Object.entries(by).map(([k, v]) => `${k.toLowerCase()} ${v}`).join(', ')}${teaOf(n) !== 'SKIP' ? ` (TABLE_EXISTS_ACTION=${teaOf(n)})` : ''}` });
+    }
+    return { blocking, pre, between, post, targetSchemas, jobs, notes, picked: picked.length };
+  }
   for (const [tea, names] of groups) {
     const common = {
       schemas: names, schemaExpr: names.length === allSchemas.length && a.header && a.header.mode !== 'FULL' ? null : `IN (${names.map(lit).join(',')})`,
@@ -292,7 +324,7 @@ function buildPlan(a, an, d) {
       jobs.push({ ...common, title: `Этап 2: данные и остальные объекты (${names.join(', ')})`, tableExistsAction: 'APPEND' });
     } else jobs.push({ ...common, title: `Импорт: ${names.join(', ')}${tea !== 'SKIP' ? ` (TABLE_EXISTS_ACTION=${tea})` : ''}` });
   }
-  return { blocking, pre, between, post, targetSchemas, jobs };
+  return { blocking, pre, between, post, targetSchemas, jobs, notes };
 }
 
 /** PL/SQL для одного задания Data Pump (IMPORT или SQL_FILE) с выводом журнала через DBMS_OUTPUT. */
@@ -306,6 +338,10 @@ function dpBlock({ operation = 'IMPORT', jobName, dir, files, logFile, sqlFile, 
   if (job.password) L.push(`DBMS_DATAPUMP.SET_PARAMETER(h, 'ENCRYPTION_PASSWORD', ${lit(job.password)});`);
   if (job.schemaExpr) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'SCHEMA_EXPR', ${lit(job.schemaExpr)});`);
   if (job.tablesExpr) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'NAME_EXPR', ${lit(job.tablesExpr)}, 'TABLE');`);
+  if (job.include && job.include.paths.length) {
+    L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'INCLUDE_PATH_EXPR', ${lit(`IN (${job.include.paths.map(lit).join(',')})`)});`);
+    for (const [path, names] of Object.entries(job.include.names)) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'NAME_EXPR', ${lit(`IN (${names.map(lit).join(',')})`)}, ${lit(path)});`);
+  }
   if (job.exclude && job.exclude.length) L.push(`DBMS_DATAPUMP.METADATA_FILTER(h, 'EXCLUDE_PATH_EXPR', ${lit(`IN (${job.exclude.map(lit).join(',')})`)});`);
   for (const [a, b] of job.remapSchema || []) L.push(`DBMS_DATAPUMP.METADATA_REMAP(h, 'REMAP_SCHEMA', ${lit(a)}, ${lit(b)});`);
   for (const [a, b] of job.remapTablespace || []) L.push(`DBMS_DATAPUMP.METADATA_REMAP(h, 'REMAP_TABLESPACE', ${lit(a)}, ${lit(b)});`);
@@ -357,6 +393,8 @@ function impdpCommand(t, dir, files, job) {
   for (const [a, b] of job.remapSchema || []) parts.push(`remap_schema=${a}:${b}`);
   for (const [a, b] of job.remapTablespace || []) parts.push(`remap_tablespace=${a}:${b}`);
   if (job.exclude && job.exclude.length) parts.push(`exclude=${job.exclude.join(',')}`);
+  if (job.include) for (const [path, names] of Object.entries(job.include.names))
+    parts.push(`include=${path}:"IN (${names.slice(0, 20).map(n => `'${n}'`).join(',')}${names.length > 20 ? `, …ещё ${names.length - 20}` : ''})"`);
   if (job.oid) parts.push('transform=OID:N');
   parts.push(`table_exists_action=${job.tableExistsAction || 'SKIP'}`);
   if (job.metadataOnly) parts.push('content=METADATA_ONLY');

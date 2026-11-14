@@ -463,6 +463,7 @@ async function runDumpImport(p, ctx) {
       const userid = `${m ? m[1] : tConn.user}/${tConn.password}@${buildConnectString(tConn)}${m ? ' as sysdba' : ''}`;
       const lines = [`userid="${userid.replace(/"/g, '')}"`, `file="${a.file || a.header.file}"`, `log="${log}"`, 'ignore=y', 'grants=y', 'indexes=y', 'constraints=y', 'rows=y', 'commit=y', 'buffer=10485760', 'feedback=100000'];
       if (plan.imp.fromuser.length) lines.push(`fromuser=(${plan.imp.fromuser.join(',')})`, `touser=(${plan.imp.touser.join(',')})`);
+      if (plan.imp.tables && plan.imp.tables.length) lines.push(`tables=(${plan.imp.tables.join(',')})`);
       else lines.push('full=y');
       fs.writeFileSync(par, lines.join('\n'));
       const cs = (a.header && a.header.charset) || 'AL32UTF8';
@@ -510,9 +511,34 @@ async function postCheck(db, a, plan, d) {
     const exp = ((a.contents && a.contents.schemas) || []).find(x => x.name === src[0]);
     const act = await db.query(`SELECT object_type AS t, COUNT(*) AS n FROM ${V}_objects WHERE owner = :o AND object_name NOT LIKE 'BIN$%' GROUP BY object_type`, { o: s }).catch(() => []);
     const actual = Object.fromEntries(act.map(r => [r.t, Number(r.n)]));
-    if (exp) for (const [type, n] of Object.entries(exp.objects)) counts.push({ schema: s, type, expected: n, actual: actual[type] || 0 });
+    if (d.objects && d.objects.length) {
+      const ids = new Set(d.objects), exp2 = {};
+      const mine = ((a.contents && a.contents.objects) || []).filter(o => ids.has(o.id) && o.owner === src[0]);
+      for (const o of mine) (exp2[o.type] = exp2[o.type] || []).push(o.name);
+      for (const [type, names] of Object.entries(exp2)) {
+        let found = 0;
+        for (let i = 0; i < names.length; i += 500) {
+          const chunk = names.slice(i, i + 500), binds = { o: s, t: type }; chunk.forEach((n, k) => (binds[`n${k}`] = n));
+          const r = await db.query(`SELECT COUNT(*) AS n FROM ${V}_objects WHERE owner = :o AND object_type = :t AND object_name IN (${chunk.map((_, k) => `:n${k}`).join(', ')})`, binds).catch(() => [{ n: 0 }]);
+          found += Number(r[0].n);
+        }
+        counts.push({ schema: s, type, expected: names.length, actual: found });
+      }
+    } else if (exp) for (const [type, n] of Object.entries(exp.objects)) counts.push({ schema: s, type, expected: n, actual: actual[type] || 0 });
   }
   return { invalid, counts };
 }
 
-module.exports = { runDumpAnalyze, runDumpImport, previewPlan, targetState, findImp, runDp };
+/** Отбор объектов по имени с зависимостями (для выборочного импорта). */
+async function selectObjects(p) {
+  const a = loadAnalysis(p);
+  if (!a.contents || !a.contents.objects) throw new Error('Состав дампа не прочитан — выборочный импорт недоступен. Повторите анализ.');
+  const d = mergeDecisions(a.defaults, p.decisions);
+  const { selectWithDeps } = require('./select');
+  const id = p.targetId || a.targetId;
+  if (!id) return selectWithDeps(null, a, d, p.filter || {});
+  const db = await connect(getConnection(id));
+  try { return await selectWithDeps(db, a, d, p.filter || {}); } finally { await db.close(); }
+}
+
+module.exports = { selectObjects, runDumpAnalyze, runDumpImport, previewPlan, targetState, findImp, runDp };

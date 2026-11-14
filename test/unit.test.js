@@ -541,3 +541,49 @@ CREATE OR REPLACE PACKAGE BODY "SCOTT"."PKG2" AS PROCEDURE p IS BEGIN fin.calc_p
   assert(iss && iss.level === 'warning' && iss.list.some(l => l.startsWith('FIN')), 'проблема code-deps');
   console.log('OK: зависимости кода в дампе');
 }
+
+// --- выборочный импорт из дампа ---
+{
+  const { parseDdl } = require('../server/dump/sqlfile');
+  const { closure, matchObjects, nameMatcher } = require('../server/dump/select');
+  const { buildPlan, dpBlock, impdpCommand, unresolved } = require('../server/dump/plan');
+  const c = parseDdl(`CREATE USER "S" IDENTIFIED BY VALUES 'x';
+CREATE TABLE "S"."ORD_2026" ("ID" NUMBER, "C" NUMBER);
+CREATE TABLE "S"."CLIENTS" ("ID" NUMBER, "R" NUMBER);
+CREATE TABLE "S"."REGIONS" ("ID" NUMBER);
+CREATE TABLE "S"."OTHER" ("ID" NUMBER);
+CREATE SEQUENCE "S"."SEQ_ORD" START WITH 1;
+ALTER TABLE "S"."ORD_2026" ADD CONSTRAINT "FK1" FOREIGN KEY ("C") REFERENCES "S"."CLIENTS" ("ID") ENABLE;
+ALTER TABLE "S"."CLIENTS" ADD CONSTRAINT "FK2" FOREIGN KEY ("R") REFERENCES "S"."REGIONS" ("ID") ENABLE;
+CREATE OR REPLACE TRIGGER "S"."TRG_ORD" BEFORE INSERT ON "S"."ORD_2026" FOR EACH ROW BEGIN :new.id := seq_ord.nextval; END;
+/
+CREATE OR REPLACE PACKAGE BODY "S"."RPT_2026" AS PROCEDURE p IS BEGIN DELETE FROM other; END; END;
+/
+CREATE OR REPLACE VIEW "S"."V_X" AS SELECT * FROM other;
+`);
+  assert(nameMatcher('2026')('ord_2026') && nameMatcher('ORD\\_%', 'like') && nameMatcher('%_2026', 'like')('RPT_2026') && !nameMatcher('%_2026', 'like')('RPT_2025'));
+  const seeds = matchObjects(c.objects, { mask: '2026' }).map(o => o.id);
+  assert.deepStrictEqual(seeds.sort(), ['PACKAGE:S.RPT_2026', 'TABLE:S.ORD_2026']);
+  // REGIONS уже есть в базе → не тянем; остальное — из дампа
+  const r = closure(c.objects, seeds, (o, n) => o === 'S' && n === 'REGIONS');
+  const ids = r.rows.map(x => x.id).sort();
+  assert.deepStrictEqual(ids, ['PACKAGE:S.RPT_2026', 'SEQUENCE:S.SEQ_ORD', 'TABLE:S.CLIENTS', 'TABLE:S.ORD_2026', 'TABLE:S.OTHER', 'TRIGGER:S.TRG_ORD']);
+  assert.strictEqual(r.rows.find(x => x.id === 'TRIGGER:S.TRG_ORD').reason, 'trigger');
+  assert.strictEqual(r.rows.find(x => x.id === 'TABLE:S.CLIENTS').via, 'TABLE:S.ORD_2026');
+  assert.deepStrictEqual(r.existing.map(x => x.id), ['TABLE:S.REGIONS']);
+  assert(!ids.includes('VIEW:S.V_X'));
+  // план: одно задание с INCLUDE, пользователь создаётся заранее, решение по существующей схеме не обязательно
+  const a = { format: 'datapump', header: { parts: ['x.dmp'] }, contents: c, target: { users: { S: { exists: false } }, allUsers: [], user: 'SYSTEM', directories: [] } };
+  const an = { issues: [{ id: 'schema-S', needsDecision: true, schema: 'S', title: 'Схема S уже есть' }], defaults: {} };
+  const d = { schemas: {}, tablespaces: {}, objects: r.rows.map(x => x.id) };
+  assert.deepStrictEqual(unresolved(an, d), []);
+  const p = buildPlan(a, an, d);
+  assert.strictEqual(p.jobs.length, 1);
+  assert.deepStrictEqual(p.jobs[0].include.names.TABLE, ['CLIENTS', 'ORD_2026', 'OTHER']);
+  assert.deepStrictEqual(p.jobs[0].include.names.PACKAGE_BODY, ['RPT_2026']);
+  assert(p.pre.some(s => /CREATE USER "S"/.test(s.sql)), 'пользователь создаётся заранее');
+  const blk = dpBlock({ jobName: 'J', dir: 'D', files: ['x.dmp'], job: p.jobs[0] });
+  assert(/INCLUDE_PATH_EXPR', 'IN \(''TABLE'',/.test(blk) && /NAME_EXPR', 'IN \(''CLIENTS'',''ORD_2026'',''OTHER''\)', 'TABLE'\)/.test(blk) && !/EXCLUDE_PATH_EXPR/.test(blk), blk);
+  assert(/include=TRIGGER:"IN \('TRG_ORD'\)"/.test(impdpCommand({ user: 'SYSTEM' }, 'D', ['x.dmp'], p.jobs[0])));
+  console.log('OK: выборочный импорт из дампа');
+}
