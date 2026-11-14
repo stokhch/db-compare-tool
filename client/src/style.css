@@ -29,3 +29,6 @@ h2.page { margin: 0 0 16px; font-size: 20px; font-weight: 600; }
 pre.cmd { background: #f2f4f7; padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .arrow { font-size: 22px; color: #8b98ad; padding: 0 4px 14px; align-self: center; }
 .sub { border: 1px dashed var(--border, #d0d5dd); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; }
+
+.navgroup { color: #98a2b3; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 12px 16px 4px; }
+.sidebar { overflow-y: auto; height: 100vh; position: sticky; top: 0; }

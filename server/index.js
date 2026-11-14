@@ -142,6 +142,21 @@ app.get('/api/connections/:id/columns', h(async req => {
 app.get('/api/snapshots', h(req => snapshots.list(req.query.connId, req.query.schema)));
 app.delete('/api/snapshots/:id', h(req => { snapshots.remove(req.params.id); return { ok: true }; }));
 app.get('/api/ddl-journal/sql', h(req => ({ sql: snapshots.ddlJournalSql(req.query.type, req.query.schema) })));
+app.post('/api/ddl-journal/install', h(async req => {
+  const conn = store.getConnection(req.body.connId);
+  const sql = snapshots.ddlJournalSql(conn.type, req.body.schema);
+  const { connect: cn } = require('./db');
+  const db = await cn(conn);
+  try {
+    if (conn.type === 'postgres') { await db.exec(sql); return { ok: true }; }
+    if (req.body.schema) await db.exec(`ALTER SESSION SET CURRENT_SCHEMA = ${db.quote(String(req.body.schema).toUpperCase())}`);
+    const body = sql.replace(/^--.*$/gm, '');
+    const [ddl, trg] = body.split(/CREATE OR REPLACE TRIGGER/);
+    for (const st of ddl.split(';').map(x => x.trim()).filter(Boolean)) await db.exec(st).catch(e => { if (!/ORA-00955/.test(e.message)) throw e; });
+    await db.exec('CREATE OR REPLACE TRIGGER' + trg.replace(/\n\/\s*$/, '').trim().replace(/\/\s*$/, ''));
+    return { ok: true };
+  } finally { await db.close(); }
+}));
 app.get('/api/ddl-journal', h(req => snapshots.readDdlJournal(req.query.connId, req.query.schema)));
 app.get('/api/docs/:file', (req, res) => {
   const f = path.join(require('./tools/docs').DIR, path.basename(req.params.file));

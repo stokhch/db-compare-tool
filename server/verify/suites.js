@@ -36,6 +36,7 @@ function remove(kind, id) {
 const CHECK_TITLES = {
   'schema-compare': 'Структура', 'data-compare': 'Данные', 'agg-compare': 'Агрегаты', 'query-compare': 'Запросы',
   'calc-verify': 'Расчёты', profile: 'Профиль данных', readiness: 'Готовность данных', 'unit-tests': 'Юнит-тесты', 'deps-check': 'Зависимости пакетов', 'data-sync': 'Синхронизация данных', delta: 'Догрузка',
+  health: 'Аудит здоровья', 'index-advice': 'Индексы', 'plan-compare': 'Планы запросов', backup: 'Резервная копия', 'schema-snapshot': 'Снимок схемы',
 };
 function verdict(type, s) {
   if (!s) return { status: 'error', text: 'нет результата', problems: 1 };

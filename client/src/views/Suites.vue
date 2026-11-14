@@ -84,7 +84,7 @@ import JobPanel from '../components/JobPanel.vue';
 import { api, safe, toast } from '../api';
 import { connName } from '../store';
 
-const TYPES = { 'schema-compare': 'Структура', 'data-compare': 'Данные', 'agg-compare': 'Агрегаты', 'query-compare': 'Запросы', 'calc-verify': 'Расчёты', profile: 'Профиль данных' };
+const TYPES = { 'schema-compare': 'Структура', 'data-compare': 'Данные', 'agg-compare': 'Агрегаты', 'query-compare': 'Запросы', 'calc-verify': 'Расчёты', profile: 'Профиль данных', readiness: 'Готовность данных', 'unit-tests': 'Юнит-тесты', 'deps-check': 'Зависимости', health: 'Аудит здоровья', 'index-advice': 'Индексы', 'plan-compare': 'Планы запросов', backup: 'Резервная копия', 'schema-snapshot': 'Снимок схемы' };
 const presets = [
   { v: '0 7 * * 1-5', t: 'по будням в 7:00' }, { v: '0 2 * * *', t: 'каждую ночь в 2:00' },
   { v: '0 * * * *', t: 'каждый час' }, { v: '*/30 * * * *', t: 'каждые 30 минут' }, { v: '0 8 * * 1', t: 'по понедельникам в 8:00' },

@@ -3,6 +3,7 @@
     <nav class="sidebar">
       <div class="logo">DB Compare<small>Oracle ⇄ PostgreSQL</small></div>
       <router-link to="/connections">🔌 Подключения</router-link>
+      <div class="navgroup">Миграция и сверка</div>
       <router-link to="/profile">📊 Профиль данных</router-link>
       <router-link to="/schema">🧩 Сравнение схем</router-link>
       <router-link to="/data">🔍 Сравнение данных</router-link>
@@ -11,6 +12,16 @@
       <router-link to="/copy">📦 Копирование</router-link>
       <router-link to="/dump">🗄️ Импорт дампа</router-link>
       <router-link to="/code">🧑‍💻 Код приложения</router-link>
+      <div class="navgroup">Работа с базой</div>
+      <router-link to="/sql">⌨️ SQL-консоль</router-link>
+      <router-link to="/perf">⚡ Производительность</router-link>
+      <router-link to="/health">🩺 Аудит здоровья</router-link>
+      <router-link to="/search">🔎 Поиск по базе</router-link>
+      <router-link to="/history">🕰️ История схемы</router-link>
+      <router-link to="/docs">📘 Документация</router-link>
+      <router-link to="/testcopy">🧪 Тестовая копия</router-link>
+      <router-link to="/backups">💾 Резервные копии</router-link>
+      <div class="navgroup">Автоматизация</div>
       <router-link to="/suites">⏰ Регламент</router-link>
       <router-link to="/jobs">🕘 Задачи <span v-if="runningJobs" class="badge">{{ runningJobs }}</span></router-link>
       <router-link to="/settings">⚙️ Настройки</router-link>

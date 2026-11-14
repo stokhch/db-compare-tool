@@ -42,6 +42,8 @@ class PostgresDb {
       application_name: 'db-compare-tool',
       connectionTimeoutMillis: 20000,
     });
+    // соединение могут завершить извне (pg_terminate_backend, перезапуск сервера) — не роняем приложение
+    raw.on("error", e => { raw._dbcmpError = e; });
     await raw.connect();
     await raw.query("SET TimeZone = 'UTC'");
     await raw.query("SET DateStyle = 'ISO, YMD'");
