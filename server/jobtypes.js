@@ -20,6 +20,13 @@ const { runReadiness } = require('./verify/readiness');
 const { runDepsCheck } = require('./migrate/deps');
 const { runUnitTests } = require('./verify/unittests');
 const { runDumpAnalyze, runDumpImport } = require('./dump/import');
+const { runPlanCompare, runIndexAdvice } = require('./tools/perf');
+const { runHealth } = require('./tools/health');
+const { runSearch } = require('./tools/search');
+const { runDocs } = require('./tools/docs');
+const { runBackup } = require('./tools/backup');
+const { runPiiScan, runTestCopy } = require('./testdata/testcopy');
+const { takeSnapshot } = require('./history/snapshots');
 
 const JOB_TYPES = {
   'schema-compare': { title: p => `Схемы: ${p.sourceSchema} ↔ ${p.targetSchema}`, run: runSchemaCompare },
@@ -42,6 +49,15 @@ const JOB_TYPES = {
   'unit-tests': { title: p => `Юнит-тесты функций${p.suite ? ' (без Oracle)' : ''}`, run: runUnitTests },
   'dump-analyze': { title: p => `Анализ дампа: ${require('path').basename(String(p.file || ''))}`, run: runDumpAnalyze },
   'dump-import': { title: p => `Импорт дампа${p.title ? ': ' + p.title : ''}`, run: runDumpImport },
+  'plan-compare': { title: p => `Сравнение планов: запросов ${(p.queries || []).length}`, run: runPlanCompare },
+  'index-advice': { title: p => `Советы по индексам: ${p.schema}`, run: runIndexAdvice },
+  health: { title: p => `Аудит здоровья: ${p.schema}`, run: runHealth },
+  'db-search': { title: p => `Поиск «${String(p.text || '').slice(0, 40)}» (${{ value: 'в данных', code: 'в коде', name: 'в именах' }[p.mode || 'value']})`, run: runSearch },
+  'db-docs': { title: p => `Документация: ${p.schema}`, run: runDocs },
+  backup: { title: p => `Резервная копия${p.schema ? ': ' + p.schema : ''}`, run: runBackup },
+  'pii-scan': { title: p => `Поиск персональных данных: ${p.sourceSchema}`, run: runPiiScan },
+  'test-copy': { title: p => `Тестовая копия: ${p.sourceSchema} → ${p.targetSchema}`, run: runTestCopy },
+  'schema-snapshot': { title: p => `Снимок схемы: ${p.schema}`, run: takeSnapshot },
   'apply-sql': { title: p => `Выполнение скрипта: ${(p.statements || []).length} операторов`, run: runApplySql },
 };
 

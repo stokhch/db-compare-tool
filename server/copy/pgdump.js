@@ -104,4 +104,4 @@ function listDumps() {
     .sort((a, b) => b.mtime - a.mtime);
 }
 
-module.exports = { runPgDump, listDumps, DUMPS };
+module.exports = { runPgDump, listDumps, DUMPS, connArgs, pgEnv };

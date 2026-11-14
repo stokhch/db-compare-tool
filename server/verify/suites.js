@@ -49,6 +49,11 @@ function verdict(type, s) {
     case 'unit-tests': { const p = (s.failed || 0) + (s.notFound || 0); return { status: p ? 'fail' : 'ok', text: `функций ${s.functions}: вызовов ${s.calls}, не прошло ${s.failed}, не найдено ${s.notFound}`, problems: p }; }
     case 'deps-check': { const p = s.missing || 0; return { status: p ? 'fail' : 'ok', text: `объектов ${s.objects}: не хватает ${s.missing}`, problems: p }; }
     case 'profile': return { status: s.error ? 'fail' : s.warning ? 'warn' : 'ok', text: `колонок ${s.columns}: ошибок ${s.error || 0}, предупреждений ${s.warning || 0}`, problems: s.error || 0 };
+    case 'health': return { status: s.error ? 'fail' : s.warning ? 'warn' : 'ok', text: `оценка ${s.score}: ошибок ${s.error}, предупреждений ${s.warning}`, problems: s.error };
+    case 'index-advice': return { status: s.fkNoIndex || s.invalid || s.missing ? 'warn' : 'ok', text: `советов ${s.advices}: FK без индекса ${s.fkNoIndex}, нет индексов ${s.missing}, недействительных ${s.invalid}`, problems: (s.fkNoIndex || 0) + (s.invalid || 0) };
+    case 'plan-compare': { const p = (s.slower || 0) + (s.error || 0); return { status: p ? 'fail' : s.warning ? 'warn' : 'ok', text: `запросов ${s.queries}: медленнее ${s.slower}, с замечаниями ${s.warning}, ошибок ${s.error}`, problems: p }; }
+    case 'backup': return { status: s.ok ? 'ok' : 'fail', text: `копия ${s.bytes != null ? Math.round(s.bytes / 1048576) + ' МБ' : ''}${s.verified === null ? ', без проверки' : s.verified ? ', проверена' : ', ПРОВЕРКА НЕ ПРОЙДЕНА'}`, problems: s.ok ? 0 : 1 };
+    case 'schema-snapshot': return { status: s.changed ? 'warn' : 'ok', text: s.changed ? 'структура изменилась — сохранён новый снимок' : 'структура не менялась', problems: 0 };
     default: return { status: 'ok', text: JSON.stringify(s).slice(0, 200), problems: 0 };
   }
 }

@@ -21,8 +21,13 @@ const CAT = {
 function makeKey(caseSensitive) { return n => (n == null ? '' : caseSensitive ? String(n) : String(n).toLowerCase()); }
 
 async function runSchemaCompare(p, ctx) {
-  const srcConn = getConnection(p.sourceId);
-  const tgtConn = getConnection(p.targetId);
+  // сторона может быть снимком структуры из «Истории схемы» — тогда база не нужна
+  const { snapshotSide } = require('../history/snapshots');
+  const snapA = p.sourceSnapshot ? snapshotSide(p.sourceSnapshot) : null, snapB = p.targetSnapshot ? snapshotSide(p.targetSnapshot) : null;
+  if (snapA) p.sourceSchema = p.sourceSchema || snapA.schema;
+  if (snapB) p.targetSchema = p.targetSchema || snapB.schema;
+  const srcConn = snapA ? snapA.conn : getConnection(p.sourceId);
+  const tgtConn = snapB ? snapB.conn : getConnection(p.targetId);
   const sameEngine = srcConn.type === tgtConn.type;
   const K = makeKey(!!p.caseSensitive);
   const opts = { rowCounts: p.rowCounts || 'none' };
@@ -31,15 +36,16 @@ async function runSchemaCompare(p, ctx) {
   ctx.log(`Приёмник: ${tgtConn.name} (${tgtConn.type}) схема ${p.targetSchema}`);
   ctx.progress(0, 0, 'Подключение…');
 
-  const [src, tgt] = await Promise.all([connect(srcConn), connect(tgtConn)]);
+  const [src, tgt] = await Promise.all([snapA ? snapA.db : connect(srcConn), snapB ? snapB.db : connect(tgtConn)]);
+  if (snapA || snapB) { p.checkPgCode = false; p.checkTranslation = false; p.buildSync = false; }
   let A, B, sync = null;
   try {
     ctx.progress(0, 0, 'Чтение метаданных источника…');
-    A = await loadMeta(src, p.sourceSchema, opts, ctx);
+    A = snapA ? snapA.meta : await loadMeta(src, p.sourceSchema, opts, ctx);
     ctx.checkCancel();
     ctx.progress(0, 0, 'Чтение метаданных приёмника…');
     // Если сравниваем Oracle -> PG, функции пакетов ora2pg кладёт в схемы с именами пакетов
-    B = await loadMeta(tgt, p.targetSchema, opts, ctx, A.packages || []);
+    B = snapB ? snapB.meta : await loadMeta(tgt, p.targetSchema, opts, ctx, A.packages || []);
     // Только выбранные объекты
     if (p.objects && p.objects.length) {
       A = filterMeta(A, p.objects, K);

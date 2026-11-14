@@ -100,6 +100,8 @@ async function copyTable(src, tgt, ta, tb, p, ctx, K, fetchSize) {
 
   let rows = 0;
   const rowsTotal = ta.rowEstimate || 0;
+  // преобразование строк перед записью (маскирование персональных данных в «Тестовой копии»)
+  const tf = (p.rowTransform && p.rowTransform(ta.name, writable.map(x => x.a.name))) || (r => r);
   const report = () => ctx.progress(undefined, undefined, `${ta.name}: ${rows}${rowsTotal ? ' из ~' + rowsTotal : ''} строк`);
 
   if (tgt.type === 'postgres') {
@@ -109,7 +111,8 @@ async function copyTable(src, tgt, ta, tb, p, ctx, K, fetchSize) {
       for await (const batch of src.stream(sql, [], fetchSize)) {
         ctx.checkCancel();
         let chunk = '';
-        for (const r of batch) {
+        for (const r0 of batch) {
+          const r = tf(r0);
           chunk += writable.map((x, i) => csvField(pgValue(r[i], x.b))).join(',') + '\n';
         }
         rows += batch.length;
@@ -144,7 +147,8 @@ async function copyTable(src, tgt, ta, tb, p, ctx, K, fetchSize) {
   };
   for await (const batch of src.stream(sql, [], fetchSize)) {
     ctx.checkCancel();
-    for (const r of batch) {
+    for (const r0 of batch) {
+      const r = tf(r0);
       buf.push(writable.map((x, i) => oracleValue(r[i], x.b)));
       if (buf.length >= batchSize) await flush();
     }

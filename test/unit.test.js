@@ -461,3 +461,55 @@ END`);
   assert.strictEqual(pg.groups[0].id, 'role'); assert.deepStrictEqual(pg.fixes[0].patch, { noOwner: true, noPrivileges: true });
   console.log('OK: проверка перед запуском и разбор ошибок');
 }
+
+// --- сервисные функции: планы, индексы, аудит, маскирование, поиск, документация, снимки ---
+{
+  const { analyzePgPlan, adviseFromMeta } = require('../server/tools/perf');
+  const { implicitRefs } = require('../server/tools/health');
+  const { makeMasker, detectColumn } = require('../server/testdata/mask');
+  const { matchLines } = require('../server/tools/search');
+  const { erSvg } = require('../server/tools/docs');
+  const { structureHash } = require('../server/history/snapshots');
+  const plan = { Plan: { 'Node Type': 'Nested Loop', 'Plan Rows': 10, 'Actual Rows': 50000, 'Actual Loops': 1, Plans: [
+    { 'Node Type': 'Seq Scan', 'Relation Name': 'orders', 'Plan Rows': 100, 'Actual Rows': 500, 'Actual Loops': 1, Filter: "((status)::text = 'NEW'::text AND (client_id = 5))", 'Rows Removed by Filter': 900000 },
+    { 'Node Type': 'Seq Scan', 'Relation Name': 'items', 'Plan Rows': 1, 'Actual Rows': 1, 'Actual Loops': 5000, Filter: '((order_id)::numeric = o.id)' },
+  ] } };
+  const f = analyzePgPlan(plan, 'app');
+  const kinds = f.map(x => x.kind);
+  for (const k of ['seqscan', 'cast', 'nlseq', 'estimate']) assert(kinds.includes(k), `план: нет ${k} — ${kinds}`);
+  assert(/\("status", "client_id"\)/.test(f.find(x => x.kind === 'seqscan').sql), f.find(x => x.kind === 'seqscan').sql);
+  const db = { type: 'postgres', quote: x => `"${x}"` };
+  const meta = { schema: 'app', tables: [
+    { name: 'dept', columns: [{ name: 'id', family: 'int' }], pk: { columns: ['id'] }, uniques: [], indexes: [], fks: [] },
+    { name: 'emp', columns: [{ name: 'id', family: 'int' }, { name: 'dept_id', family: 'int' }, { name: 'boss_id', family: 'int' }], pk: { columns: ['id'] }, uniques: [],
+      indexes: [{ name: 'ix_a', columns: ['dept_id'] }, { name: 'ix_b', columns: ['dept_id', 'id'] }], fks: [{ name: 'fk1', columns: ['dept_id'], refTable: 'dept' }] },
+    { name: 'log', columns: [{ name: 'emp_id', family: 'int' }, { name: 'dept_id', family: 'int' }], uniques: [], indexes: [], fks: [{ name: 'fk2', columns: ['emp_id'], refTable: 'emp' }] },
+  ] };
+  const adv = adviseFromMeta(meta, db, { name: 'Oracle', meta: { tables: [{ name: 'EMP', indexes: [{ name: 'IX_BOSS', columns: ['BOSS_ID'] }] }] } });
+  const ak = adv.map(a => `${a.kind}:${a.table}`);
+  for (const k of ['nopk:log', 'fk:log', 'dup:emp', 'missing:emp']) assert(ak.includes(k), `индексы: нет ${k} — ${ak}`);
+  assert(!ak.includes('fk:emp'), 'FK emp.dept_id покрыт индексом');
+  assert.deepStrictEqual(implicitRefs(meta).map(r => `${r.table}.${r.column}->${r.refTable}`), ['log.dept_id->dept']);
+  const m = makeMasker('k');
+  assert.strictEqual(m('fullname')('Иванова Анна Петровна'), m('fullname')('Иванова Анна Петровна'), 'детерминированность');
+  assert(/(ова|ева|ёва|ина|ая) \S+ \S+(вна|чна)$/.test(m('fullname')('Иванова Анна Петровна')), m('fullname')('Иванова Анна Петровна'));
+  assert.notStrictEqual(m('fullname')('Иванов И.И.'), 'Иванов И.И.');
+  const sn = m('snils')('112-233-445 95');
+  assert(/^\d{3}-\d{3}-\d{3} \d{2}$/.test(sn));
+  const d9 = sn.replace(/\D/g, '').slice(0, 9).split('').map(Number); let sum = d9.reduce((a, x, i) => a + x * (9 - i), 0);
+  const ctl = sum < 100 ? sum : sum === 100 || sum === 101 ? 0 : sum % 101 === 100 ? 0 : sum % 101;
+  assert.strictEqual(Number(sn.slice(-2)), ctl, 'контрольная сумма СНИЛС');
+  const inn = m('inn')('7707083893');
+  const w = [2, 4, 10, 3, 5, 9, 4, 6, 8];
+  assert.strictEqual(Number(inn[9]), (inn.slice(0, 9).split('').reduce((a, x, i) => a + x * w[i], 0) % 11) % 10, 'контрольная сумма ИНН');
+  assert(/^\+7 \(\d{3}\) \d{3}-\d{2}-\d{2}$/.test(m('phone')('+7 (912) 345-67-89')));
+  assert.strictEqual(m('email')(null), null);
+  assert.strictEqual(m('date_shift')('1980-05-01').length, 10);
+  assert.strictEqual(detectColumn('t', { name: 'FAM', family: 'string' }).method, 'lastname');
+  assert.strictEqual(detectColumn('t', { name: 'contact', family: 'string' }, Array(10).fill('a.b@c.ru')).method, 'email');
+  assert.strictEqual(detectColumn('t', { name: 'dr', family: 'int' }), null);
+  assert.deepStrictEqual(matchLines('a\nSELECT x FROM T_ARCH\nb', 't_arch').map(x => x.line), [2]);
+  assert(/<svg/.test(erSvg(meta.tables)) && /dept/.test(erSvg(meta.tables)));
+  assert.strictEqual(structureHash({ ...meta, views: [], mviews: [], sequences: [], routines: [], triggers: [] }), structureHash({ ...meta, views: [], mviews: [], sequences: [], routines: [], triggers: [], tables: meta.tables.map(t => ({ ...t, rowEstimate: 999 })) }), 'хеш не зависит от числа строк');
+  console.log('OK: сервисные функции');
+}

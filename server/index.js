@@ -124,6 +124,39 @@ app.get('/api/files/sync/:jobId/:name', (req, res) => {
   if (!fs.existsSync(f)) return res.status(404).send('Нет файла');
   res.download(f);
 });
+// ---------- SQL-консоль, активность, история схемы, документация, резервные копии ----------
+const sqlTools = require('./tools/sql');
+const snapshots = require('./history/snapshots');
+const backups = require('./tools/backup');
+app.post('/api/sql/run', h(req => sqlTools.runSql(req.body.connId, req.body.sql, req.body)));
+app.post('/api/sql/compare', h(req => sqlTools.compareSql(req.body)));
+app.get('/api/connections/:id/activity', h(req => sqlTools.activity(req.params.id)));
+app.post('/api/connections/:id/kill', h(req => sqlTools.killSession(req.params.id, String(req.body.session), req.body.mode)));
+app.get('/api/connections/:id/columns', h(async req => {
+  const { loadMeta } = require('./meta');
+  const { connect: cn } = require('./db');
+  const db = await cn(store.getConnection(req.params.id));
+  try { const m = await loadMeta(db, req.query.schema, {}, null); return [...m.tables.map(t => ({ name: t.name, kind: 'table', columns: t.columns.map(c => ({ name: c.name, type: c.type })) })), ...m.views.map(v => ({ name: v.name, kind: 'view', columns: (v.columns || []).map(c => ({ name: c.name || c, type: c.type || '' })) }))]; }
+  finally { await db.close(); }
+}));
+app.get('/api/snapshots', h(req => snapshots.list(req.query.connId, req.query.schema)));
+app.delete('/api/snapshots/:id', h(req => { snapshots.remove(req.params.id); return { ok: true }; }));
+app.get('/api/ddl-journal/sql', h(req => ({ sql: snapshots.ddlJournalSql(req.query.type, req.query.schema) })));
+app.get('/api/ddl-journal', h(req => snapshots.readDdlJournal(req.query.connId, req.query.schema)));
+app.get('/api/docs/:file', (req, res) => {
+  const f = path.join(require('./tools/docs').DIR, path.basename(req.params.file));
+  if (!fs.existsSync(f)) return res.status(404).send('Нет файла');
+  if (f.endsWith('.md')) res.type('text/markdown; charset=utf-8').set('Content-Disposition', `attachment; filename="${path.basename(f)}"`);
+  res.sendFile(f);
+});
+app.get('/api/backups', h(() => backups.list()));
+app.delete('/api/backups/:id', h(async req => { const b = backups.list().find(x => x.id === req.params.id); if (b) await backups.removeBackup(b); return { ok: true }; }));
+app.get('/api/backups/:id/download', (req, res) => {
+  const b = backups.list().find(x => x.id === req.params.id);
+  if (!b || b.type !== 'postgres' || !fs.existsSync(b.file)) return res.status(404).send('Копия недоступна для скачивания');
+  res.download(b.file);
+});
+
 // ---------- Проверка перед запуском и разбор ошибок ----------
 const preflight = require('./preflight');
 const { diagnoseJob, retryParams } = require('./lib/diagnose');
